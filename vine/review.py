@@ -19,6 +19,8 @@ class Review(option.Option):
                         [--source=<topicBranch>]
                         [--target=<publicBranch>]
                         [--state=<openMergedDeclined>]
+                        [--stashURL=<url>]
+                        [--verifySSL=<bool>]
                         [--project=<prj>]
                         [--repo=<repo>]
                         [--recurse]
@@ -45,6 +47,10 @@ class Review(option.Option):
         --state=<state>             The state of the pull request to update. Valid values are open, merged, and
                                     declined.
                                     [default: open]
+        --stashURL=<url>            The stash url, e.g. https://rzlc.llnl.gov/stash. 
+                                    [default: .grapeconfig.project.stashURL]
+        --verifySSL=<bool>          Set to False to ignore SSL certificate verification issues.
+                                    [default: .grapeconfig.project.verifySSL]
         --project=<prj>             The project key part of the stash url, e.g. the "GRP" in
                                     https://rzlc.llnl.gov/stash/projects/GRP/repos/grape/browse.
                                     [default: .grapeconfig.project.name]
@@ -61,6 +67,7 @@ class Review(option.Option):
                                     <description> to the existing title / description instead of replacing it.
         --append                    For reviewers, title,  and description updates, append <userNames>, <title>,  and
                                     <description> to the existing title / description instead of replacing it.
+
 
 
     """
@@ -86,7 +93,8 @@ class Review(option.Option):
         if args["--test"]:
             rz_atlassian = Atlassian.TestAtlassian(name)
         else:
-            rz_atlassian = Atlassian.Atlassian(name)
+            verify = True if args["--verifySSL"].lower() == "true" else False
+            rz_atlassian = Atlassian.Atlassian(name, url=args["--stashURL"], verify=verify)
         rz_stash = rz_atlassian.stash
 
         # determine pull request title
@@ -165,6 +173,10 @@ class Review(option.Option):
         return True
 
     def setDefaultConfig(self, config):
+        config.ensureSection("project")
+        config.set("project", "stashURL", "https://rzlc.llnl.gov/stash")
+        config.set("project", "verifySSL", "True")
+        config.set("project", "name", "My unnamed project")
         pass
 
 
@@ -197,7 +209,8 @@ def postPullRequest(repo, title, branch, target_branch, descr, reviewers, args):
                     print("reviewers: %s" % reviewers)
                 request = repo.pull_requests.create(title, branch, target_branch,
                                                     description=descr, reviewers=reviewers)
-                print("Pull request created.")
+                url = request["links"]["self"][0]["href"]
+                print("Pull request created at %s." % url)
             except stashy.errors.GenericException as e:
                 print("STASH: %s" % e.message)
                 exit(1)
@@ -245,15 +258,17 @@ def postPullRequest(repo, title, branch, target_branch, descr, reviewers, args):
                             descr = currentDescription + "\n" + descr
 
 
-                if title is not None or descr is not None or reviewers is not None:
+                if title is not None or descr is not None or reviewers:
                     if not quiet:
-                        print("upating request with title=%s, description=%s, reviewers=%s" % (title, descr, reviewers))
+                        print("updating request with title=%s, description=%s, reviewers=%s" % (title, descr, reviewers))
                         print(requestData)
                         print(reviewers is None)
                     request = request.update(ver, title=title,  description=descr, reviewers=reviewers)
+                    url = request["links"]["self"][0]["href"]
+                    print("Pull request updated at %s." % url)
                 else:
                     request = requestData
-                print("Pull request updated.")
+                    print("Pull request unchanged.")
             except stashy.errors.GenericException as e:
                 print("STASH: %s" % e.message)
                 exit(1)

@@ -26,12 +26,13 @@ class Publish(resumable.Resumable):
     """
     grape publish
     Merges/Squash-merges/Rebases the current topic branch <type>/<username>/<descr> into the public <branch>,
-    where <public> is read from one of the <type>:<public> pairs found in .grapeconfig.flow.topicPrefixMappings and
-    .grapeconfig.workspace.submoduleTopicPrefixMappings. The branch-dependent publish policy (merge vs. squash merge.
-    vs rebase, etc) is decided using grapeconfig.flow.publishPolicy for the top-level repo and the publish policy for
+    where <public> is read from one of the <type>:<public> pairs found in .grapeconfig.flow.topicPrefixMappings,
+    .grapeconfig.flow.topicDestinationMappings, and/or .grapeconfig.workspace.submoduleTopicPrefixMappings. The
+    branch-dependent publish policy (merge vs. squash merge. vs rebase, etc) is decided using
+    grapeconfig.flow.publishPolicy for the top-level repo and the publish policy for
     submodules is decided using grapeconfig.workspace.submodulePublishPolicy.
 
-    Usage:  grape-publish [--squash [--cascade ] | --merge |  --rebase]
+    Usage:  grape-publish [--squash [--cascade=<branch> ] | --merge |  --rebase]
                          [-m <msg>]
                          [--recurse | --norecurse]
                          [--public=<public> [--submodulePublic=<submodulePublic>]]
@@ -48,6 +49,8 @@ class Publish(resumable.Resumable):
                          [--noUpdateLog | [--updateLog=<file> --skipFirstLines=<int> --entryHeader=<string>]]
                          [--tickVersion=<bool> [-T <arg>]...]
                          [--user=<StashUserName>]
+                         [--stashURL=<httpsURL>]
+                         [--verifySSL=<bool>]
                          [--project=<StashProjectKey>]
                          [--repo=<StashRepoName>]
                          [-R <arg>]...
@@ -60,11 +63,11 @@ class Publish(resumable.Resumable):
             grape-publish --continue
             grape-publish --abort
             grape-publish --printSteps
-            grape-publish --quick -m <msg> [-v] [--user=<StashUserName>]
+            grape-publish --quick -m <msg> [-v] [--user=<StashUserName>] [--public=<public>] [--noReview]
 
     Options:
     --squash                Squash merges the topic into the public, then performs a commit if the merge goes clean.
-    --cascade               For squash merges, can choose to cascade back to the topic branch after the merge is
+    --cascade=<branch>      For squash merges, can choose to cascade back to <branch> after the merge is
                             completed.
     --merge                 Perform a normal merge.
     -m <msg>                The commit message to use for a successful merge / squash merge. Ignored if used with
@@ -122,6 +125,10 @@ class Publish(resumable.Resumable):
     -T <arg>                An argument to pass to grape-version tick. Type grape version --help for available options
                             and defaults. -T can be used multiple times to pass multiple arguments.
     --user=<user>           Your Stash username.
+    --stashURL=<url>        Your Stash URL, e.g. https://rzlc.llnl.gov/stash .
+                            [default: .grapeconfig.project.stashURL]
+    --verifySSL=<bool>      Set to False to ignore SSL certificate verification issues.
+                            [default: .grapeconfig.project.verifySSL]
     --project=<project>     Your Stash Project. See grape-review for more details.
                             [default: .grapeconfig.project.name]
     --repo=<repo>           Your Stash repo. See grape-review for more details.
@@ -131,7 +138,8 @@ class Publish(resumable.Resumable):
     --noReview              Don't perform any actions that interact with pull requests. Overrides --useStash.
     --useStash=<bool>       Whether or not to use pull requests. [default: .grapeconfig.publish.useStash]
     --public=<public>       The branch to publish to. Defaults to the mapping for the current topic branch as described
-                            by .grapeconfig.flow.topicPrefixMappings.
+                            by .grapeconfig.flow.topicDestinationMappings. .grapeconfig.flow.topicPrefixMappings is used
+                            if no option for .grapeconfig.flow.topicDestinationMappings exists.
     --submodulePublic=<b>   The branch to publish to in submodules. Defaults to the mapping for the current topic branch
                             as described by .grapeconfig.workspace.submoduleTopicPrefixMappings.
     --emailNotification=<b> Set to true to send a notification email after you've published. The email will consist of
@@ -227,7 +235,7 @@ class Publish(resumable.Resumable):
             public = "Unknown"
         except KeyError:
             public = "Unknown"
-        return "Publish the current topic branch to %s" % public
+        return "Publish the current %s branch to %s" % (git.branchPrefix(git.currentBranch()), public)
 
     def _resume(self, args):
         super(Publish, self)._resume(args)
@@ -256,6 +264,9 @@ class Publish(resumable.Resumable):
         # whether or not to use Stash
         if args["--useStash"].lower() == "false" and not args["--noReview"]:
             args["--noReview"] = True
+        if not args["--noReview"] and type(args["--verifySSL"]) != bool:
+            verify = True if args["--verifySSL"].lower() == "true" else False
+            args["--verifySSL"] = verify
         # get the Stash Username
         user = args["--user"]
 
@@ -266,10 +277,11 @@ class Publish(resumable.Resumable):
         #undo any commits done since we first started
         super(Publish, self)._resume(args)
         branch = git.currentBranch()
-        utility.printMsg("Reverting %s from %s to %s" % (branch, git.SHA(branch), self.progress["startingSHA"]))
-        revert = utility.userInput("continue? [y,n]", "y")
+        utility.printMsg("Reverting all commits from %s from %s to %s" % (branch, self.progress["startingSHA"],
+                                                                          git.SHA(branch)))
+        revert = utility.userInput("This will apply to %s. continue? [y,n]" % git.currentBranch(), "y")
         if revert:
-            git.checkout("-B %s %s" % (branch, self.progress["startingSHA"]))
+            git.revert("--no-edit %s..%s" % (self.progress["startingSHA"], "HEAD"))
         # release IN PROGRESS LOCK
         utility.printMsg("Releasing In Progress Lock")
         self.releaseInProgressLock(args)
@@ -313,7 +325,7 @@ class Publish(resumable.Resumable):
                  "verifyCompletedReview": self.verifyCompletedReview,
                  "testForCleanWorkspace1": self.testForCleanWorkspace,
                  "testForCleanWorkspace2": self.testForCleanWorkspace,
-                 "markInProgress": self.aquireInProgressLock,
+                 "markInProgress": self.acquireInProgressLock,
                  "markAsDone": self.releaseInProgressLock,
                  "updateLog": self.updateLog,
                  "notify": self.sendNotificationEmail,
@@ -387,12 +399,16 @@ class Publish(resumable.Resumable):
     def ensureReview(self, args):
         return self.markReview(args, [], "Skipping ensuring review exists.", updateOnly=False)
 
+
+            
+
+ 
     @staticmethod
     def checkInProgressLock(args):
         if args["--noReview"]:
-            utility.printMsg("Skipping In Progresss Lock Check..")
+            utility.printMsg("Skipping In Progress Lock Check..")
             return True
-        atlassian = Atlassian.Atlassian(username=args["--user"])
+        atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
         repo = atlassian.project(args["--project"]).repo(args["--repo"])
         pullRequests = repo.pullrequests()
         inProgressRequests = []
@@ -419,10 +435,9 @@ class Publish(resumable.Resumable):
             for request in inProgressRequests:
                 print request
             return False
-
-    def aquireInProgressLock(self, args):
+    def acquireInProgressLock(self, args):
         if args["--noReview"]:
-            utility.printMsg("Skipping In Progresss Lock Check..")
+            utility.printMsg("Skipping In Progress Lock Check..")
             return True
         retcode = self.checkInProgressLock(args)
         if retcode:
@@ -435,7 +450,8 @@ class Publish(resumable.Resumable):
         if args["--noReview"]:
             utility.printMsg("Skipping verification of code review...")
             return True
-        atlassian = Atlassian.Atlassian(username=args["--user"])
+
+        atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
         repo = atlassian.project(args["--project"]).repo(args["--repo"])
         request = repo.getOpenPullRequest(args["--topic"], args["--public"])
         if not request:
@@ -456,7 +472,7 @@ class Publish(resumable.Resumable):
         if args["--noReview"]:
             utility.printMsg("Skipping verification of code review...")
             return True
-        atlassian = Atlassian.Atlassian(username=args["--user"])
+        atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
         repo = atlassian.project(args["--project"]).repo(args["--repo"])
         pullRequest = repo.getOpenPullRequest(args["--topic"], args["--public"])
         verified = False
@@ -525,7 +541,7 @@ class Publish(resumable.Resumable):
             return ret
         self.loadModifiedFiles(args)
         try:
-            git.commit(" -m \"GRAPE PUBLISH: committing staged file changes before publish.%s\"")
+            git.commit(" -m \"%s\"" % args["-m"])
         except git.GrapeGitError:
             pass
         return self.checkInProgressLock(args)
@@ -553,6 +569,8 @@ class Publish(resumable.Resumable):
 
     def loadCommitMessage(self, args):
         if "commitMsg" in self.progress:
+            if not args["-m"]:
+                args["-m"] = self.progress["commitMsg"]
             return True
         if args["--noUpdateLog"]:
             self.progress["commitMsg"] = "no details entered"
@@ -560,16 +578,17 @@ class Publish(resumable.Resumable):
 
         if not args["<CommitMessageFile>"] and not args["-m"]:
             proceed = utility.userInput("No commit message entered. Would you like to use the Pull Request's "
-                                        "description as your  commit message? [y/n]", 'y')
+                                        "description as your  commit message? [y/n] \n(Enter 'n' to enter a file name with your commit message instead)", 'y')
             if not proceed:
                 args["<CommitMessageFile>"] = utility.userInput("Enter the name of the file containing your commit "
                                                                 "message: ")
 
-        if args["<CommitMessageFile>"]:
+        if args["<CommitMessageFile>"] and not args["-m"]:
+            # commit message should come from the file
             commitMsgFile = args["<CommitMessageFile>"]
             try:
                 with open(commitMsgFile, 'r') as f:
-                    commitMsg = f.readlines()
+                    commitMsg = f.readlines()+["\n"]
 
             except IOError as e:
                 print(e.message)
@@ -582,32 +601,31 @@ class Publish(resumable.Resumable):
                 self.markReview(args, ["--descr", commitMsgFile], "")
             else:
                 utility.printMsg("Skipping update of pull request description from commit message")
+        elif args["-m"]: 
+            commitMsg = [args["-m"]+"\n"] 
         else:
             if args["--noReview"]:
-                utility.printMsg("Skipping retreival of commit message from Pull Request description..")
+                utility.printMsg("Skipping retrieval of commit message from Pull Request description..")
                 if not args["-m"]:
                     print("File with commit message is required argument when publishing with --noReview and no -m "
                           "<msg> defined.")
                     return False
             utility.printMsg("Retrieving pull request description for use as commit message...")
-            atlassian = Atlassian.Atlassian(username=args["--user"])
+            atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
             repo = atlassian.project(args["--project"]).repo(args["--repo"])
             pullRequest = repo.getOpenPullRequest(args["--topic"], args["--public"])
-            commitMsg = pullRequest.description().splitlines(True)+['']
+            commitMsg = pullRequest.description().splitlines(True)+['\n']
 
         # this will be used for the actual merge commit message.
         escapedCommitMsg = ''.join(commitMsg).replace("\"", "\\\"")
         escapedCommitMsg = escapedCommitMsg.replace("`", "'")
         
-        if escapedCommitMsg and not args["-m"]:
+        if escapedCommitMsg: 
             args["-m"] = escapedCommitMsg
-        elif not escapedCommitMsg and args["-m"]:
-            escapedCommitMsg = args["-m"]
-            commitMsg = [args["-m"]]
         else:
             utility.printMsg("WARNING: Commit message is empty. ")
 
-        utility.printMsg("The following commit message will be used for email notification, merge commits, etc.\n "
+        utility.printMsg("The following commit message will be used for email notification, merge commits, etc.\n"
                          "======================================================================")
         print ''.join(commitMsg[:10])
         print "======================================================================"
@@ -623,6 +641,7 @@ class Publish(resumable.Resumable):
             raise e
         else:
             self.progress["commitMsg"] = escapedCommitMsg
+            args["-m"] = escapedCommitMsg
             return True
 
     def updateLog(self, args):
@@ -640,7 +659,7 @@ class Publish(resumable.Resumable):
             header = header.replace("<date>", time.asctime())
             header = header.replace("<user>", git.config("--get user.name"))
             header = header.replace("<version>", self.progress["version"])
-            header = header.split("\\n")
+            header = ["\n"]+header.split("\\n")
             commitMsg = header + commitMsg
             numLinesToSkip = int(args["--skipFirstLines"])
             with open(logFile, 'r') as f:
@@ -653,6 +672,23 @@ class Publish(resumable.Resumable):
         return self.checkInProgressLock(args)
 
     def tickVersion(self, args):
+        menu = grapeMenu.menu()
+        if not args["--noReview"]:
+            atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
+            repo = atlassian.project(args["--project"]).repo(args["--repo"])
+            thisRequest = repo.getOpenPullRequest(args["--topic"], args["--public"])
+            requestTitle = thisRequest.title()
+            versionArgs = ["tick", "--notag", "--notick", "--nocommit"]
+            for arg in args["-T"]:
+                newArg  = arg.strip()
+                if "--tag" not in newArg and "--tick" not in newArg: 
+                    versionArgs += [arg.strip()]
+            menu.applyMenuChoice("version", versionArgs)
+            currentVer = grapeMenu.menu().getOption("version").ver
+            if currentVer in requestTitle:
+                utility.printMsg("Current Version string already in pull request title. Assuming this is from "
+                "a previous call to grape publish. Not ticking version again.")
+                return True
         ret = True
         if args["--tickVersion"].lower() == "true":
             versionArgs = ["tick", "--notag"]
@@ -732,7 +768,9 @@ class Publish(resumable.Resumable):
         # Don't need to connect if we specified the
         # host in the SMTP constructor above...
         #s.connect()
-        s.sendmail(msg['From'], [sendto, myemail], msg.as_string())
+        tolist = msg['To'].split(',')
+        tolist.append(myemail)
+        s.sendmail(msg['From'], tolist, msg.as_string())
         s.quit()
 
         # Remove the tempfile
@@ -752,6 +790,7 @@ class Publish(resumable.Resumable):
         valid = False
         if policy == "merge" or policy == "squash":
             valid = bool(args["-m"])
+            print args["-m"]
             if not valid:
                 print("Commit message required for merge or squash merge publish policies.")
         if policy == "rebase":
@@ -777,8 +816,9 @@ class Publish(resumable.Resumable):
         print("%s squash-merged successfully to %s" % (topic, public))
         print("You are currently on %s" % public)
         if args["--cascade"]:
-            git.checkout(topic)
-            git.merge("%s -m \"GRAPE PUBLISH: cascade merge of %s to %s after publish.\"" % (public, public, topic))
+            cascade = args["--cascade"]
+            git.checkout(cascade)
+            git.merge("%s -m \"GRAPE PUBLISH: cascade merge of %s to %s after publish.\"" % (public, public, cascade))
 
     @staticmethod
     def rebase(public, topic):
@@ -882,6 +922,20 @@ class Publish(resumable.Resumable):
         self.progress["targetsVerified"] = True
         return True
 
+
+    def parseConfigPublishPolicy(self, args, policy, defaultCascadeDestination):
+        # if the policy starts with cascade, we allow a cascade->Branch syntax in the config file
+        policyToks = policy.strip().lower().split('-')
+        if policyToks[0] == "cascade":
+            policy = "squash"
+
+            if len(policyToks) > 1 and policyToks[1][0] == '>':
+                args["--cascade"] = policyToks[1][1:]
+            else:
+                args["--cascade"] = defaultCascadeDestination
+        return policy
+
+
     def publishAllProjects(self, args):
         # make sure we have a commit message
         quiet = not args["-v"]
@@ -897,12 +951,20 @@ class Publish(resumable.Resumable):
 
         # set any CL defined publish policy
         policy = None
+
         if args["--merge"]:
             policy = "merge"
         if args["--squash"]:
             policy = "squash"
         if args["--rebase"]:
             policy = "rebase"
+
+        # remember this since Command Line defined policies override the submodule policies as well.
+        CLPolicy = policy
+
+        # update policy from config if not set on CL
+        if not policy:
+            policy = self.parseConfigPublishPolicy(args, config.getMapping('flow', 'publishPolicy')[public], topic)
 
         cwd = git.baseDir(quiet=quiet)
         os.chdir(cwd)
@@ -912,14 +974,13 @@ class Publish(resumable.Resumable):
             submodules = git.getModifiedSubmodules(public, topic)
             # submodule policy is Command Line requested policy, otherwise is based on 
             #       .grapeconfig.workspace.submodulePublishPolicy
-            submodulePolicy = policy
+            submodulePolicy = CLPolicy
             # store current value for args["--cascade"]
             outerCascadeOption = args["--cascade"]
             if not submodulePolicy:
                 submodulePolicy = config.getMapping('workspace', 'submodulePublishPolicy')[submodulePublic]
-                if submodulePolicy == "cascade":
-                    submodulePolicy = "squash"
-                    args["--cascade"] = True
+                submodulePolicy = self.parseConfigPublishPolicy(args, submodulePolicy, topic)
+
             valid = self.validateInput(submodulePolicy, args)
             if valid and self.verifyPublishTargetsWithUser(args):
                 for sub in submodules:
@@ -927,9 +988,20 @@ class Publish(resumable.Resumable):
 
                     grapeMenu.menu().applyMenuChoice('up', ['up', '--public=%s' % submodulePublic])
                     self.publish(submodulePolicy, submodulePublic, topic, args)
+                    os.chdir(cwd)
+                    #add and commit any new merge commits in submodules as a result of the publish
+                    git.add(sub)
+                try:
+                    # we are cool with this not working - only will have something to commit if the 
+                    # submodules were published without fast forward merges
+                    git.commit("-m \"%s - submodules published\"" % args["-m"])
+                except git.GrapeGitError:
+                    pass
+
             # restore value for args[--cascade]
             args["--cascade"] = outerCascadeOption
             os.chdir(cwd)
+
 
         # push subtrees to their respective remote branches
         push_subtrees = args["--pushSubtrees"]
@@ -965,12 +1037,8 @@ class Publish(resumable.Resumable):
                                                                                  args["-m"]), quiet=quiet)
                             utility.printMsg("Succeeded!")
 
-        # update policy from config if not set on CL
-        if not policy:
-            policy = config.getMapping('flow', 'publishPolicy')[public]
-            if policy.strip().lower() == "cascade":
-                policy = "squash"
-                args["--cascade"] = True
+
+
         valid = self.validateInput(policy, args)
         if valid and self.verifyPublishTargetsWithUser(args):
             self.publish(policy, public, topic, args)

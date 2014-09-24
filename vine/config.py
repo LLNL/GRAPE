@@ -39,7 +39,7 @@ class Config(option.Option):
         # in parallel (important for NFS systems such as LC)
         git.config("core.preloadindex","true")
 
-        #have git automatically do some garbage collection / optimizatoin
+        #have git automatically do some garbage collection / optimization
         print("setting up automatic git garbage collection...")
         git.config("gc.auto","1")
 
@@ -49,9 +49,12 @@ class Config(option.Option):
         git.config("core.trustctime","false")
 
         # stores login info for 12 hrs (max allowed by RZStash)
-        if not args["--nocredcache"]: 
-            print("Enabling 12 hr caching of https credentials...")
-            git.config("--global credential.helper","cache --timeout=43200")
+
+        if not args["--nocredcache"]:
+            cache = utility.userInput("Would you like to enable git-managed credential caching?", 'y')
+            if cache:
+                print("Enabling 12 hr caching of https credentials...")
+                git.config("--global credential.helper", "cache --timeout=43200")
 
         # enables 'as' option for merge strategies -forces a conflict if two branches
         # modify the same file

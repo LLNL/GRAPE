@@ -4,6 +4,7 @@ import grapeGit as git
 import grapeMenu
 import grapeConfig
 import resumable
+import utility
 
 
 # pull and merge in an up-to-date development branch
@@ -123,6 +124,9 @@ class MergeDevelop(resumable.Resumable):
             conflictedFiles = self.outerLevelMerge(args, branch)
         else:
             recurse = True
+        if conflictedFiles is False:
+            utility.printMsg("Initial merge failed. Resolve issue and try again. ")
+            return False
         if recurse:
             subBranchMappings = config.getMapping("workspace", "submoduleTopicPrefixMappings")
             subPublic = subBranchMappings[git.branchPrefix(branch)]
@@ -169,14 +173,15 @@ class MergeDevelop(resumable.Resumable):
         mergeArgs = args
         mergeArgs["<branch>"] = subPublic
         print("GRAPE: Merging %s into %s for submodule %s" % (subPublic, git.currentBranch(), subproject))
-        conflict = not grapeMenu.menu().getOption("m").execute(mergeArgs)
+        ret = grapeMenu.menu().getOption("m").execute(mergeArgs)
+        conflict = not ret
         if conflict:
             self.progress["stopPoint"] = "Submodule: %s" % subproject
             self.progress["submodules"] = submodules
             self.progress["cwd"] = cwd
-
-            print("GRAPE: merge in %s generated CONFLICT(S). Resolve using git mergetool and then \n"
-                  "continue by calling 'grape md --continue'" % subproject)
+            utility.printMsg("Merge in submodule %s failed. You likely need to resolve conflicts (git mergetool)\n"
+                             " or stash/commit your current changes before doing the merge.\n"
+                             "Continue by calling grape md --continue." % subproject)
             return False
         # if we are resuming from a conflict, the above grape m call would have taken care of continuing.
         # clear out the --continue flag.
@@ -218,7 +223,12 @@ class MergeDevelop(resumable.Resumable):
         mergeArgs["--quiet"] = True
         conflict = not grapeMenu.menu().getOption("m").execute(mergeArgs)
         if conflict:
-            return git.conflictedFiles()
+            conflictedFiles = git.conflictedFiles()
+            if conflictedFiles:
+                return conflictedFiles
+            else:
+                utility.printMsg("Merge issued error, but no conflicts. Aborting...")
+                return False
         else:
             return []
 
@@ -229,6 +239,7 @@ class MergeDevelop(resumable.Resumable):
             pass
         config.set("flow", "publicBranches", "develop master")
         config.set("flow", "topicPrefixMappings", "?:develop")
+        config.set("flow", "topicDestinationMappings", "none")
 
     def _resume(self, args):
         super(MergeDevelop, self)._resume(args)
