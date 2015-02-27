@@ -1,17 +1,23 @@
-import option, utility
-import grapeGit as git
+
 import os
+
+import grapeConfig
+import grapeGit as git
 import grapeMenu
+import option
+import utility
+
 # Configure current repo
 class Config(option.Option):
     """
     Configures the current repo to be optimized for GRAPE on LC
-    Usage: grape-config [--cv | --nocv] [--nocredcache] [--p4merge] 
+    Usage: grape-config [--uv [--uvArg=<arg>]... | --nouv] 
+                        [--nocredcache] [--p4merge] 
                         [--nop4merge] [--p4diff] [--nop4diff] [--git-p4]
 
     Options:
-        --cv            walks you through setting up a sparse checkout for this repo. (interactive)
-        --nocv          skips custom-view questions
+        --uv            walks you through setting up a sparse checkout for this repo. (interactive)
+        --nouv          skips custom-view questions
         --nocredcache   disables https 12 hr credential cacheing (this option recommended for Windows users)
         --p4merge       will set up p4merge as your merge tool. 
         --nop4merge     will skip p4merge questions.
@@ -73,11 +79,11 @@ class Config(option.Option):
         git.config("alias.lg","log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative --simplify-by-decoration")
         
         # perform an update of the active subprojects if asked.
-        ask = not args["--nocv"]
-        updateView = ask and (args["--cv"] or utility.userInput("do you want to edit your active subprojects?"
+        ask = not args["--nouv"]
+        updateView = ask and (args["--uv"] or utility.userInput("do you want to edit your active subprojects?"
                                                                 " (you can do this later using grape uv) [y/n]", "n"))
         if updateView:
-            grapeMenu.menu().applyMenuChoice("uv")
+            grapeMenu.menu().applyMenuChoice("uv", args["--uvArg"])
 
         # configure git to use p4merge for conflict resolution
         # and diffing
@@ -106,9 +112,6 @@ class Config(option.Option):
                print("configured repo to use p4merge for diff calls - p4merge must be in your path")
             else: 
                print("Could not find p4diff script at %s" % p4diffScript)
-        else:
-            #revert diff.external to the default value
-            git.config("diff.external","")
         useGitP4 = args["--git-p4"]
         if (useGitP4 ):
             git.config("git-p4.useclientspec","true")
@@ -136,13 +139,55 @@ class Config(option.Option):
         # install hooks here and in all submodules
         print("Installing hooks in all repos")
         cwd = git.baseDir()
-        grapeMenu.menu().applyMenuChoice("installHooks",["installHooks"])
-        os.chdir(cwd)
-        for sub in git.getActiveSubmodules(False):
-            os.chdir(os.path.join(cwd,sub))
-            grapeMenu.menu().applyMenuChoice("installHooks",["installHooks"])
-        os.chdir(cwd)
+        grapeMenu.menu().applyMenuChoice("installHooks")
+        
+        #  ensure all public branches are available in all repos
+        submodules = git.getActiveSubmodules()
+        config = grapeConfig.grapeConfig()
+        publicBranches = config.getList("flow", "publicbranches")
+        submodulePublicBranches = set(config.getMapping('workspace', 'submoduleTopicPrefixMappings').values())
+        for sub in submodules:
+            self.ensurePublicBranchesExist(grapeConfig.grapeRepoConfig(sub),sub, submodulePublicBranches)
+        
+        # reset config to the workspace grapeconfig, use that one for all nested projects' public branches.
+        wsDir = utility.workspaceDir()
+        config = grapeConfig.grapeRepoConfig(wsDir)    
+        for proj in grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes():
+            self.ensurePublicBranchesExist(config, os.path.join(wsDir,proj), publicBranches)
+        
+        self.ensurePublicBranchesExist(config, wsDir, publicBranches)
+            
         return True
 
     def setDefaultConfig(self, config):
         pass
+    
+    @staticmethod
+    def ensurePublicBranchesExist(config,repo, publicBranches):
+        cwd =  os.getcwd()
+        os.chdir(repo)
+        allBranches = git.allBranches()
+        missingBranches = []
+        for branch in publicBranches:
+            if ("remotes/origin/%s" % branch) not in allBranches:
+               missingBranches.append(branch)
+            if ("remotes/origin/%s" % branch in allBranches) and (branch not in allBranches):
+                utility.printMsg("Public branch %s does not have local version in %s. Creating it now." % (branch, repo))
+                git.branch("%s origin/%s" % (branch, branch))
+        if len(missingBranches) > 0:
+            utility.printMsg("WARNING: the following public branches do not appear to exist on the remote origin of %s:\n%s" % (repo, " ".join(missingBranches)))
+        os.chdir(cwd)
+        
+    @staticmethod
+    def checkIfPublicBranchesExist(config, repo, publicBranches):
+        origcwd =  os.getcwd()
+        os.chdir(repo)
+        allBranches = git.allBranches()
+        missingBranches = []
+        for branch in publicBranches:
+            if ("remotes/origin/%s" % branch) not in allBranches:
+               missingBranches.append("remotes/origin/%s" % branch)
+            if ("remotes/origin/%s" % branch in allBranches) and (branch not in allBranches):
+                missingBranches.append(branch)
+        os.chdir(origcwd)
+        return missingBranches

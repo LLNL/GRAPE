@@ -1,5 +1,182 @@
 
 
+Mon Feb 23 17:30:41 2015 Peter B. Robinson
+v1.4.0
+
+Same as 1.3.5
+
+
+Mon Feb 23 17:28:24 2015 Peter B. Robinson
+v1.3.5
+
+Ensures version ticking is done according to what publish thinks the public branch should be.
+
+
+Mon Feb 23 14:51:19 2015 Peter B. Robinson
+v1.3.4
+
+Same as 1.3.3
+
+
+
+Mon Feb 23 14:42:11 2015 Peter B. Robinson
+v1.3.3
+
+subtree publish fixes and subtree update capability is added.
+
+
+Mon Feb 23 12:14:52 2015 Benjamin T. Liu
+v1.3.2
+
+- Fix for deletion of nested subproject branch after publish (it is merged up to HEAD, but not pushed)
+- Initialize submodules during uv --subprojects (this prevents crash if a new submodule appears, as after a md with new submodules)
+
+
+Fri Feb 13 10:48:57 2015 Peter B. Robinson
+v1.3.1
+
+Addresses GRP-86 (new / dropped nested subproject detection on checkout) and GRP-83 (suggested version string for grape publish --startAt)
+
+
+Thu Feb 12 10:39:47 2015 Peter B. Robinson
+v1.3.1
+
+Addresses GRP-86 (new / dropped nested subproject detection on checkout) and GRP-83 (suggested version string for grape publish --startAt)
+
+
+Tue Feb 10 13:58:37 2015 Peter B. Robinson
+v1.3.0
+
+Same as 1.2.7.
+
+
+Tue Feb 10 10:34:11 2015 Peter B. Robinson
+v1.2.7
+
+SUMMARY: Adds public branch and branch model consistency checks to grape status. 
+
+
+
+DETAILS - GRAPE: 
+BREAKING CHANGE - Grape config has lost the out-of-date --cv / --nocv options. They have been replaced with uv / --nouv options instead. 
+
+Grape clone has learned the \"--allNested\" option, which will clone all nested subprojects without asking for user input. 
+Grape config can pass options to grape uv using the [--uvArg=<arg>] flag. 
+Grape status has learned the --failIfInconsistent, --failIfMissingPublicBranches, and --failIfOnInconsistentBranches flags. These affect the return code when grape detects missing public branches and inconsistent subproject branches. Grape status will always print a message when detecting these issues regardless of the use of these flags. 
+Grape publish now uses grape status --failIfInconsistent as part of its checkForCleanWorkspace step. 
+An individual suite can now be tested using grape test. 
+grape uv has learned the --allSubmodules and --allNestedSubprojects flags. 
+
+DETAILS - TESTING
+TestGrape can now switch back and forth from hiding stdout, allowing easier debugging of failing tests. 
+Grape status is now tested using the new grid testing infrastructure.
+
+
+Fri Feb  6 10:56:22 2015 Benjamin T. Liu
+v1.2.6
+
+Ensure uv operates from the project level
+
+
+Wed Feb  4 15:25:24 2015 Benjamin T. Liu
+v1.2.5
+
+Extend commit file list to handle submodules and nested subprojects
+Extend prepublish to commit to nested subprojects
+Print notification email to display, even if not being sent
+
+
+Tue Jan 13 10:37:32 2015 Peter B. Robinson
+v1.2.4
+
+Moved md to first publish step to ensure submodules are up to date, preventing situations where ensure review will fail.
+
+
+Mon Jan 12 16:03:17 2015 Aaron Fisher
+v1.1.10
+
+Adds some machinery for creating grids of unit tests with various grape projects in different states being run through a list of tests wrapped up in a Class.
+
+
+Mon Jan 12 14:58:21 2015 Peter B. Robinson
+v1.1.9
+
+Exposes full CLI syntax to the grape menu.
+
+
+Mon Jan 12 14:53:24 2015 Benjamin T. Liu
+v1.1.8
+
+Fixes for publish
+
+
+Fri Jan  9 14:15:58 2015 Peter B. Robinson
+v1.2.0
+
+Equivalent to grape 1.1.7.  (Previously 1.0.4) See UPDATE_LOG for more details.
+
+
+Fri Jan  9 13:14:57 2015 Benjamin T. Liu
+v1.1.7
+
+Miscellaneous fixes:
+
+Fix config to run clean
+Fix db for subprojects (GRP-80)
+Fix bundle at top level (GRP-89)
+
+
+Wed Jan  7 15:09:30 2015 Benjamin T. Liu
+v1.1.7
+
+Miscellaneous fixes:
+
+Fix config to run clean
+Fix db for subprojects (GRP-80)
+
+
+Thu Dec 18 15:57:06 2014 Peter B. Robinson
+v1.1.6
+
+Make subprojects fetch before merging, updating status message to reflect subproject merges.
+
+
+Thu Dec 18 07:56:59 2014 Benjamin T. Liu
+v1.1.5
+
+* Properly revert external diff.
+* Extend grape push to nested subprojects
+* Fix uv when local is ahead of remote
+
+
+Fri Dec 12 13:35:03 2014 Peter B. Robinson
+v1.1.4
+
+SUMMARY: Fixes several critical issues with nested subprojects and version tagging.  Adds arbitrary cascade definitions for publish policies. 
+BREAKING CHANGE: moved .grapeuserconfig location to workspace .git directory. This prevents the accidental removal of .grapeuserconfig with git clean calls. 
+
+DETAILS: 
+Fixes an issue where submodules did not get new branches if the user had an active nested subproject. 
+Fixed uv bug that could put .grapuserconfig in a bad state and cause requested nested projects to not clone.
+Fix branch tagging for squash and cascade commits, respecting branch-specific tag suffixes. 
+Adds arbitrary cascade definitions for publish policies.  New grape config syntax is: 
+[flow]
+publishpolicy = PUBLICBRANCH:cascade->BRANCH1->BRANCH2->...->BRANCHN
+Adds cascade commits as a separate publish step.
+
+
+Tue Dec  9 16:21:19 2014 Peter B. Robinson
+v1.1.3
+
+Removes git basedir call from workspaceDir - git basedir ignores current working directory when git is calling grape runHook. I do not know how this happens, can only observe that it does.
+
+
+Mon Dec  8 16:12:21 2014 Peter B. Robinson
+v1.1.1
+
+Nested Project bugfixes, adds python version check, changes core subprocess execution in hopes of eliminating hangs in grape hooks.
+
+
 Wed Dec  3 15:24:08 2014 Peter B. Robinson
 v1.1.0
 

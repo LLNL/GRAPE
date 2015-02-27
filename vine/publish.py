@@ -33,7 +33,7 @@ class Publish(resumable.Resumable):
     grapeconfig.flow.publishPolicy for the top-level repo and the publish policy for
     submodules is decided using grapeconfig.workspace.submodulePublishPolicy.
 
-    Usage:  grape-publish [--squash [--cascade=<branch> ] | --merge |  --rebase]
+    Usage:  grape-publish [--squash [--cascade=<branch>... ] | --merge |  --rebase]
                          [-m <msg>]
                          [--recurse | --norecurse]
                          [--public=<public> [--submodulePublic=<submodulePublic>]]
@@ -41,6 +41,7 @@ class Publish(resumable.Resumable):
                          [--noverify]
                          [--nopush]
                          [--pushSubtrees | --noPushSubtrees]
+                         [--forcePushSubtree=<subtreeName>]...
                          [-v]
                          [--startAt=<startStep>] [--stopAt=<stopStep>]
                          [--buildCmds=<buildStr>] [--buildDir=<path>]
@@ -59,7 +60,7 @@ class Publish(resumable.Resumable):
                          [--useStash=<bool>]
                          [--deleteTopic=<bool>]
                          [--emailNotification=<bool> [--emailHeader=<str> --emailSubject=<str> --emailSendTo=<addr>
-                          --emailServer=<smtpserver>]]
+                          --emailServer=<smtpserver> --emailMaxFiles=<int>]]
                          [<CommitMessageFile>]
             grape-publish --continue
             grape-publish --abort
@@ -69,7 +70,9 @@ class Publish(resumable.Resumable):
     Options:
     --squash                Squash merges the topic into the public, then performs a commit if the merge goes clean.
     --cascade=<branch>      For squash merges, can choose to cascade back to <branch> after the merge is
-                            completed.
+                            completed. Define multiple times to setup a chain of cascades. Overrides outer repo and 
+                            nestedSubproject cascades defined in .grapeconfig publish policies. Does not override
+                            submodule publish policies. 
     --merge                 Perform a normal merge.
     -m <msg>                The commit message to use for a successful merge / squash merge. Ignored if used with
                             --rebase.
@@ -161,12 +164,14 @@ class Publish(resumable.Resumable):
                             [default: .grapeconfig.publish.emailSendTo]
     --emailServer=<server>  The smtp email server address.
                             [default: .grapeconfig.publish.emailServer]
+    --emailMaxFiles=<int>   Maximum number of modified files (per subproject) to show in email.
+                            [default: .grapeconfig.publish.emailMaxFiles]
     --quick                 Perform the following steps only: ensureReview, markInProgress, publish, markAsDone
 
     Optional Arguments:
     <CommitMessageFile>     A file with an update message for this publish command. The pull request associated with
-                            this branch will be updated to contain this message. If you don't specify a filename, it is
-                            assumed that the contents of the pull request description are intended for the update
+                            this branch will be updated to contain this message. If you don't specify a filename, grape
+                            will give you an opportunity to use contents of the pull request description are intended for the update
                             message. Both the commit message for the merge and an update log will contain this message.
                             Additionally, if email notification is configured, the contents of the email will have
                             this message.
@@ -218,16 +223,18 @@ class Publish(resumable.Resumable):
         config.set('publish', 'emailServer', 'smtp.email.server')
         config.set('publish', 'emailSendTo', 'user.list@company.com')
         config.set('publish', 'emailSubject', '<public> updated to <version>')
+        config.set('publish', 'emailMaxFiles', '100')
 
     def __init__(self):
         super(Publish, self).__init__()
         self._key = "publish"
         self._section = "Gitflow Tasks"
         self.branchPrefix = None
-        self.modifiedSubtrees = []
+        self.modifiedSubtrees = set()
         self.st_prefixes = {}
         self.st_remotes = {}
         self.st_branches = {}
+        self.cascadeDict = {}
 
     def description(self):
         try:
@@ -305,10 +312,10 @@ class Publish(resumable.Resumable):
         self.parseArgs(args)
         
         startPoint = args["--startAt"]
-        order = ["ensureReview", "verifyCompletedReview", "testForCleanWorkspace1", "verifyPublishActions",
-                 "md", "markInProgress", "tickVersion", "updateLog",
+        order = ["testForCleanWorkspace1", "verifyPublishActions", "md", "ensureReview", "verifyCompletedReview", 
+                 "markInProgress", "tickVersion", "updateLog",
                  "build", "test", "testForCleanWorkspace2", "prePublish", "publish", "postPublish",
-                 "tagVersion", "markAsDone", "notify", "deleteTopic", "done"]
+                 "tagVersion", "performCascades", "markAsDone", "notify", "deleteTopic", "done"]
 
         if args["--quick"]:
             order = ["md", "ensureReview", "markInProgress", "publish", "markAsDone", "deleteTopic", "done"]
@@ -330,6 +337,7 @@ class Publish(resumable.Resumable):
                  "prePublish": self.performCustomPrePublishSteps,
                  "tickVersion": self.tickVersion,
                  "tagVersion": self.tagVersion,
+                 "performCascades": self.performCascades,
                  "publish": self.publishAllProjects,
                  "postPublish": self.performCustomPostPublishSteps,
                  "deleteTopic": self.deleteTopicBranch,
@@ -459,7 +467,7 @@ class Publish(resumable.Resumable):
 
     def releaseInProgressLock(self, args):
         if args["--noReview"]:
-            utility.printMsg("Skipping verification of code review...")
+            utility.printMsg("Skipping In Progress Lock Release...")
             return True
 
         atlassian = Atlassian.Atlassian(username=args["--user"], url=args["--stashURL"], verify=args["--verifySSL"])
@@ -514,6 +522,7 @@ class Publish(resumable.Resumable):
         cwd = os.getcwd()
         os.chdir(utility.workspaceDir())
         ret = utility.isWorkspaceClean()
+        ret = ret and grapeMenu.menu().applyMenuChoice("status", ["--failIfInconsistent"])
         os.chdir(cwd)
         return ret
 
@@ -551,31 +560,73 @@ class Publish(resumable.Resumable):
         if not ret:
             return ret
         self.loadModifiedFiles(args)
+
+        # Commit any files that may have been added to the main repo.
+        # The custom prepublish step is responsible for performing the git add for any
+        # modified files.
+        # Submodules and nested subprojects are not handled here.  If any files there are
+        # modified during the prepublish step, the git add *and* the git commit must be
+        # handled in the custom step.
         try:
             git.commit(" -m \"%s\"" % args["-m"])
         except git.GrapeGitError:
             pass
+
         return self.checkInProgressLock(args)
 
     def performCustomPostPublishSteps(self, args):
         return self.performCustomStep("postpublish", args)
 
+    @staticmethod
+    def getModifiedFileList(public, topic, args):
+        # Limit the number of updated files displayed per subproject
+        emailMaxFiles = args["--emailMaxFiles"]
+        updatelist = git.diff("--name-only %s %s" % (public, topic)).split('\n')
+        if len(updatelist) > emailMaxFiles:
+            updatelist.append("[ Additional files not shown ]")
+        return updatelist
+
     def loadModifiedFiles(self, args):
         if "modifiedFiles" in self.progress:
             return True
+        wsdir = utility.workspaceDir()    
+        os.chdir(wsdir)
         public = args["--public"]
         topic = args["--topic"]
         if git.SHA(public) == git.SHA(topic):
             public = utility.userInput("Please enter the branch name or SHA of the commit to diff against %s for the "
                                        "modified file list." % topic)
-        self.progress["modifiedFiles"] = git.diff("--name-only %s %s" % (public, topic)).split('\n')
+
+        self.progress["modifiedFiles"] = []
+
+        # Get list of modified files in main repo
+        self.progress["modifiedFiles"] += self.getModifiedFileList(public, topic, args)
+
+        # Get list of modified files in submodules
+        if args["--recurse"]:
+            submodulePublic = args["--submodulePublic"]
+            submodules = git.getModifiedSubmodules(public, topic)
+            for sub in submodules:
+               os.chdir(os.path.join(wsdir, sub))
+               self.progress["modifiedFiles"] += [sub + "/" + s for s in self.getModifiedFileList(submodulePublic, topic, args)]
+            os.chdir(wsdir)
+
+        # Get list of modified files in nested subprojects
+        for nested in grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes():
+            os.chdir(os.path.join(wsdir, nested))
+            self.progress["modifiedFiles"] += [nested + "/" + s for s in self.getModifiedFileList(public, topic, args)]
+        os.chdir(wsdir)
+
         return True
 
     def loadVersion(self, args):
         if "version" in self.progress:
             return True
         else:
-            self.progress["version"] = utility.userInput("Please enter version string for this commit")
+            menu = grapeMenu.menu()
+            menu.applyMenuChoice("version", ["read"])
+            guess = menu.getOption("version").ver
+            self.progress["version"] = utility.userInput("Please enter version string for this commit", guess)
         return True
 
     def loadCommitMessage(self, args):
@@ -664,7 +715,7 @@ class Publish(resumable.Resumable):
             return True
         logFile = args["--updateLog"]
         cwd = os.getcwd()
-        os.chdir(git.baseDir())
+        os.chdir(utility.workspaceDir())
         if logFile:
             header = args["--entryHeader"]
             header = header.replace("<date>", time.asctime())
@@ -691,11 +742,7 @@ class Publish(resumable.Resumable):
             repo = atlassian.project(args["--project"]).repo(args["--repo"])
             thisRequest = repo.getOpenPullRequest(args["--topic"], args["--public"])
             requestTitle = thisRequest.title()
-            versionArgs = ["tick", "--notag", "--notick", "--nocommit"]
-            for arg in args["-T"]:
-                newArg  = arg.strip()
-                if "--tag" not in newArg and "--tick" not in newArg: 
-                    versionArgs += [arg.strip()]
+            versionArgs = ["read"]
             menu.applyMenuChoice("version", versionArgs)
             currentVer = grapeMenu.menu().getOption("version").ver
             if currentVer in requestTitle:
@@ -704,7 +751,7 @@ class Publish(resumable.Resumable):
                 return True
         ret = True
         if args["--tickVersion"]:
-            versionArgs = ["tick", "--notag"]
+            versionArgs = ["tick", "--notag", "--public=%s" % args["--public"]]
             for arg in args["-T"]:
                 versionArgs += [arg.strip()]
             ret = grapeMenu.menu().applyMenuChoice("version", versionArgs)
@@ -719,36 +766,49 @@ class Publish(resumable.Resumable):
             versionArgs = ["tick", "--tag", "--notick", "--nocommit", "--tagNested"]
             for arg in args["-T"]:
                 versionArgs += [arg.strip()]
+            cwd = os.getcwd()
+            wsdir = utility.workspaceDir()    
+            os.chdir(wsdir)
             ret = grapeMenu.menu().applyMenuChoice("version", versionArgs)
+            for nested in grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes():
+               os.chdir(os.path.join(wsdir, nested))
+               git.push("--tags origin")
+            os.chdir(wsdir)
             git.push("--tags origin")
+            os.chdir(cwd)
         return ret
 
     def sendNotificationEmail(self, args):
 
-        if not args["--emailNotification"].lower() == "true":
-            # skip email send
-            return True
         if not (self.loadCommitMessage(args) and self.loadVersion(args) and self.loadModifiedFiles(args)):
             return False
         # Write the contents of the mail file out to a temporary file
         mailfile = tempfile.mktemp()
-        mf = open(mailfile, 'w')
 
-        date = time.asctime()
-        emailHeader = args["--emailHeader"]
-        emailHeader = emailHeader.replace("<user>", git.config("--get user.name"))
-        emailHeader = emailHeader.replace("<date>", date)
-        emailHeader = emailHeader.replace("<version>", self.progress["version"])
-        emailHeader = emailHeader.replace("<public>", args["--public"])
-        emailHeader = emailHeader.split("\\n")
-        mf.write('\n'.join(emailHeader))
-        comments = self.progress["commitMsg"]
-        mf.write(comments)
-        updatelist = self.progress["modifiedFiles"]
-        if len(updatelist) > 0:
-            mf.write("\n FILES UPDATED:\n")
-            mf.write("\n".join(updatelist))
-        mf.close()
+        with open(mailfile, 'w') as mf:
+           date = time.asctime()
+           emailHeader = args["--emailHeader"]
+           emailHeader = emailHeader.replace("<user>", git.config("--get user.name"))
+           emailHeader = emailHeader.replace("<date>", date)
+           emailHeader = emailHeader.replace("<version>", self.progress["version"])
+           emailHeader = emailHeader.replace("<public>", args["--public"])
+           emailHeader = emailHeader.split("\\n")
+           mf.write('\n'.join(emailHeader))
+           comments = self.progress["commitMsg"]
+           mf.write('\n')
+           mf.write(comments)
+           updatelist = self.progress["modifiedFiles"]
+           if len(updatelist) > 0:
+               mf.write("\nFILES UPDATED:\n")
+               mf.write("\n".join(updatelist))
+
+        if not args["--emailNotification"].lower() == "true":
+            utility.printMsg("Skipping E-mail notification..")
+            with open(mailfile, 'r') as mf:
+               utility.printMsg("-- Begin update message --")
+               utility.printMsg(mf.read())
+               utility.printMsg("-- End update message --")
+            return True
 
         # Open the file back up and attach it to a MIME message
         t = open(mailfile, 'rb')
@@ -828,10 +888,7 @@ class Publish(resumable.Resumable):
         git.commit("-m \"%s\"" % args["-m"])
         print("%s squash-merged successfully to %s" % (topic, public))
         print("You are currently on %s" % public)
-        if args["--cascade"]:
-            cascade = args["--cascade"]
-            git.checkout(cascade)
-            git.merge("%s -m \"GRAPE PUBLISH: cascade merge of %s to %s after publish.\"" % (public, public, cascade))
+        
 
     @staticmethod
     def rebase(public, topic):
@@ -841,6 +898,65 @@ class Publish(resumable.Resumable):
         git.checkout(public)
         git.merge(topic)
         print("You are currently on %s" % public)
+        
+    def parseConfigPublishPolicy(self, args, policy, defaultCascadeDestination, repoType="outer"):
+        # if the policy starts with cascade, we allow a cascade->Branch->branch2->... syntax in the config file
+        policyToks = policy.strip().lower().split('->')
+        if policyToks[0] == "cascade":
+            policy = "squash"
+            # restore cascade info from an abort if necessary
+            if "<<cascadeDict>>" in args and args["<<cascadeDict>>"] is not None:
+                self.cascadeDict = args["<<cascadeDict>>"]
+                args["<<cascadeDict>>"] = None    
+            if len(policyToks) > 1:
+                self.cascadeDict[repoType] = policyToks[1:]
+            else:
+                self.cascadeDict[repoType] = [defaultCascadeDestination]
+        args["<<cascadeDict>>"] = self.cascadeDict
+        return policy
+    
+    def parseCascadeArgs(self, args): 
+        if args["--cascade"]:
+            self.cascadeDict["outer"] = args["--cascade"]
+            args["<<cascadeDict>>"] = self.cascadeDict
+
+    def performCascades(self, args):
+        self.loadPublishTargets(args)
+        
+        if "<<cascadeDict>>" in args and args["<<cascadeDict>>"]:
+            self.cascadeDict = args["<<cascadeDict>>"]
+         
+        wsdir = utility.workspaceDir()    
+        if self.cascadeDict:
+            # do outer level and nested project cascades
+            cascade = self.cascadeDict["outer"]
+            repos= [""]+grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes()
+            repos = [os.path.join(wsdir,r) for r in repos]
+            for repo in repos:
+                public = args["--public"]
+                os.chdir(repo)
+                for branch in cascade:
+                    git.checkout(branch)
+                    git.merge("%s -m \"GRAPE PUBLISH: cascade merge of %s to %s after publish.\"" % (public, public, branch))
+                    public = branch 
+                    git.push("origin %s" % branch)
+                    
+            if "submodules" in self.cascadeDict and "<<publishedSubmodules>>" in args:
+                cascade = self.cascadeDict["submodules"]
+                repos = [os.path.join(wsdir,r) for r in args["<<publishedSubmodules>>"]]
+                for repo in repos:
+                    os.chdir(repo)
+                    public = args["--submodulePublic"]
+                    for branch in cascade:
+                        git.checkout(branch)
+                        git.merge("%s -m \"GRAPE PUBLISH: cascade merge of %s to %s after publish.\"" % (public, public, branch))
+                        public = branch 
+                        git.push("origin %s" % branch)
+            os.chdir(wsdir)
+            
+        return True
+                 
+                
 
     def publish(self, policy, public, topic, args):
         # don't bother publishing if public and topic are the same commit
@@ -886,7 +1002,7 @@ class Publish(resumable.Resumable):
         args["--pushSubtrees"] = push_subtrees
         if push_subtrees:
             allsubtrees = config.get('subtrees', 'names').strip().split()
-
+            self.modifiedSubtrees = self.modifiedSubtrees.union(set(args["--forcePushSubtree"]))
             for st in allsubtrees:
                 prefix = config.get('subtree-%s' % st, 'prefix')
                 if git.diff("--name-only %s %s -- %s" % (public, topic, prefix), quiet=quiet):
@@ -946,17 +1062,7 @@ class Publish(resumable.Resumable):
         return True
 
 
-    def parseConfigPublishPolicy(self, args, policy, defaultCascadeDestination):
-        # if the policy starts with cascade, we allow a cascade->Branch syntax in the config file
-        policyToks = policy.strip().lower().split('-')
-        if policyToks[0] == "cascade":
-            policy = "squash"
-
-            if len(policyToks) > 1 and policyToks[1][0] == '>':
-                args["--cascade"] = policyToks[1][1:]
-            else:
-                args["--cascade"] = defaultCascadeDestination
-        return policy
+    
 
 
     def publishAllProjects(self, args):
@@ -988,9 +1094,11 @@ class Publish(resumable.Resumable):
         # update policy from config if not set on CL
         if not policy:
             policy = self.parseConfigPublishPolicy(args, config.getMapping('flow', 'publishPolicy')[public], topic)
-
-        cwd = git.baseDir(quiet=quiet)
-        os.chdir(cwd)
+        
+        self.parseCascadeArgs(args)
+            
+        wsdir = utility.workspaceDir()    
+        os.chdir(wsdir)
 
         if recurse:
             submodulePublic = args["--submodulePublic"]
@@ -1002,16 +1110,16 @@ class Publish(resumable.Resumable):
             outerCascadeOption = args["--cascade"]
             if not submodulePolicy:
                 submodulePolicy = config.getMapping('workspace', 'submodulePublishPolicy')[submodulePublic]
-                submodulePolicy = self.parseConfigPublishPolicy(args, submodulePolicy, topic)
+                submodulePolicy = self.parseConfigPublishPolicy(args, submodulePolicy, topic, repoType="submodule")
 
             valid = self.validateInput(submodulePolicy, args)
             if valid and self.verifyPublishTargetsWithUser(args):
                 for sub in submodules:
-                    os.chdir(os.path.join(cwd, sub))
+                    os.chdir(os.path.join(wsdir, sub))
 
                     grapeMenu.menu().applyMenuChoice('up', ['up', '--public=%s' % submodulePublic])
                     self.publish(submodulePolicy, submodulePublic, topic, args)
-                    os.chdir(cwd)
+                    os.chdir(wsdir)
                     #add and commit any new merge commits in submodules as a result of the publish
                     git.add(sub)
                 try:
@@ -1020,54 +1128,47 @@ class Publish(resumable.Resumable):
                     git.commit("-m \"%s - submodules published\"" % args["-m"])
                 except git.GrapeGitError:
                     pass
+            
 
-            # restore value for args[--cascade]
+            # restore value for args["--cascade"]
+            args["<<publishedSubmodules>>"] = submodules
             args["--cascade"] = outerCascadeOption
-            os.chdir(cwd)
+            os.chdir(wsdir)
 
 
         # push subtrees to their respective remote branches
         push_subtrees = args["--pushSubtrees"]
         if push_subtrees:
-
-            allsubtrees = config.get('subtrees', 'names').strip().split()
-            modifiedSubtrees = []
-            for st in allsubtrees:
-                prefix = config.get('subtree-%s' % st, 'prefix')
-                if git.diff("--name-only %s %s -- %s" % (public, topic, prefix), quiet=quiet): 
-                    modifiedSubtrees.append(st)
+            modifiedSubtrees = self.modifiedSubtrees
             if modifiedSubtrees: 
-
                 proceed = self.verifyPublishTargetsWithUser(args)
                 if proceed:
                     squash = "--squash" if config.get("subtrees", "mergepolicy").lower() == "squash" else ""
                     for st in modifiedSubtrees:
-                        print("%s pushing subtree %s to %s (branch %s)..." % (squash, self.st_prefixes[st],
+                        print("pushing subtree %s to %s (branch %s)..." % (self.st_prefixes[st],
                                                                               self.st_remotes[st], self.st_branches[st]))
 
                         try:
-                            git.subtree("push %s --prefix=%s %s %s -m \"%s\"" % (squash, self.st_prefixes[st],
-                                                                                 self.st_remotes[st],  self.st_branches[st],
-                                                                                 args["-m"]), quiet=quiet)
+                            git.subtree("push --prefix=%s %s %s " % (self.st_prefixes[st],
+                                                                                 self.st_remotes[st],  self.st_branches[st]),
+                                                                                 quiet=quiet)
                         except git.GrapeGitError:
                             # the push can fail if there has never been a subtree add / pull in this repo.
                             utility.printMsg("First attempt failed. Attempting a subtree pull then push...")
-                            git.subtree("pull %s --prefix=%s %s %s -m \"%s\"" % (squash, self.st_prefixes[st],
-                                                                                 self.st_remotes[st], self.st_branches[st],
-                                                                                 args["-m"]), quiet=quiet)
-                            git.subtree("push %s --prefix=%s %s %s -m \"%s\"" % (squash, self.st_prefixes[st],
-                                                                                 self.st_remotes[st], self.st_branches[st],
-                                                                                 args["-m"]), quiet=quiet)
+                            git.subtree("pull %s --prefix=%s %s %s " % (squash, self.st_prefixes[st],
+                                                                                 self.st_remotes[st], self.st_branches[st]), quiet=quiet)
+                            git.subtree("push --prefix=%s %s %s " % ( self.st_prefixes[st],
+                                                                                 self.st_remotes[st], self.st_branches[st]), quiet=quiet)
                             utility.printMsg("Succeeded!")
 
 
 
         valid = self.validateInput(policy, args)
         if valid and self.verifyPublishTargetsWithUser(args):
-            for nested in self.modifiedNestedProjects:
-                os.chdir(os.path.join(cwd,  nested))
+            for nested in grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes():
+                os.chdir(os.path.join(wsdir,  nested))
                 self.publish(policy, public, topic, args)
-                os.chdir(cwd)
+            os.chdir(wsdir)
             self.publish(policy, public, topic, args)
             return True
         else:

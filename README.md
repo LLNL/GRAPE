@@ -349,7 +349,7 @@ A nested subproject is a git repository that is ignored by git, but grape manage
 actions, gathering information with status, etc. Individual developers decide whether they want the nested subproject in
 their workspace by using 'grape uv'. 
 
-Grape uses the .grapeconfig to know what nested subprojects are available to developers, and then the .grapeuserconfig 
+Grape uses the .grapeconfig to know what nested subprojects are available to developers, and then the .git/.grapeuserconfig 
 to know which ones to expect to find in the user's workspace. 
 
 nested projects are currently supported by addSubproject, uv, status,  checkout, and commit. Notable lack of support at 
@@ -371,7 +371,7 @@ All of these are analagous to the same named options in the subtrees and subtree
     active = True
     
 The active flag is what grape uses to determine if the nested subproject should be in your workspace. Note that grape will 
-only look in .grapeuserconfig for this particular setting, since the intended use cases for nested projects tend to be highly
+only look in .git/.grapeuserconfig for this particular setting, since the intended use cases for nested projects tend to be highly
 individualized. 
 
 
@@ -487,12 +487,19 @@ options are at least listed below.
     
 ## status
 
-    Usage: grape-status [-v] [-u | --uno]
+    Usage: grape-status [-v] [-u | --uno] 
+              [--failIfInconsistent] 
+              [--failIfMissingPublicBranches]
+              [--failIfBranchesInconsistent]
 
     Options:
-    -v      Show git commands being issued. 
-    --uno    Do not show untracked files
-    -u      Show untracked files. 
+    -v                             Show git commands being issued. 
+    --uno                          Do not show untracked files
+    -u                             Show untracked files. 
+    --failIfInconsistent           Fail if any consistency checks fail. 
+    --failIfMissingPublicBranches  Fail if your workspace or your origin's workspace is missing public branches. 
+    --failIfOnInconsistentBranches Fail if your subprojects are on branches that are inconsistent with what is checked out in your workspace. 
+    
 
     
 ## checkout
@@ -545,7 +552,7 @@ options are at least listed below.
     grapeconfig.flow.publishPolicy for the top-level repo and the publish policy for
     submodules is decided using grapeconfig.workspace.submodulePublishPolicy.
 
-    Usage:  grape-publish [--squash [--cascade=<branch> ] | --merge |  --rebase]
+    Usage:  grape-publish [--squash [--cascade=<branch>... ] | --merge |  --rebase]
                          [-m <msg>]
                          [--recurse | --norecurse]
                          [--public=<public> [--submodulePublic=<submodulePublic>]]
@@ -553,6 +560,7 @@ options are at least listed below.
                          [--noverify]
                          [--nopush]
                          [--pushSubtrees | --noPushSubtrees]
+                         [--forcePushSubtree=<subtreeName>]...
                          [-v]
                          [--startAt=<startStep>] [--stopAt=<stopStep>]
                          [--buildCmds=<buildStr>] [--buildDir=<path>]
@@ -571,7 +579,7 @@ options are at least listed below.
                          [--useStash=<bool>]
                          [--deleteTopic=<bool>]
                          [--emailNotification=<bool> [--emailHeader=<str> --emailSubject=<str> --emailSendTo=<addr>
-                          --emailServer=<smtpserver>]]
+                          --emailServer=<smtpserver> --emailMaxFiles=<int>]]
                          [<CommitMessageFile>]
             grape-publish --continue
             grape-publish --abort
@@ -581,7 +589,9 @@ options are at least listed below.
     Options:
     --squash                Squash merges the topic into the public, then performs a commit if the merge goes clean.
     --cascade=<branch>      For squash merges, can choose to cascade back to <branch> after the merge is
-                            completed.
+                            completed. Define multiple times to setup a chain of cascades. Overrides outer repo and 
+                            nestedSubproject cascades defined in .grapeconfig publish policies. Does not override
+                            submodule publish policies. 
     --merge                 Perform a normal merge.
     -m <msg>                The commit message to use for a successful merge / squash merge. Ignored if used with
                             --rebase.
@@ -673,12 +683,14 @@ options are at least listed below.
                             [default: .grapeconfig.publish.emailSendTo]
     --emailServer=<server>  The smtp email server address.
                             [default: .grapeconfig.publish.emailServer]
+    --emailMaxFiles=<int>   Maximum number of modified files (per subproject) to show in email.
+                            [default: .grapeconfig.publish.emailMaxFiles]
     --quick                 Perform the following steps only: ensureReview, markInProgress, publish, markAsDone
 
     Optional Arguments:
     <CommitMessageFile>     A file with an update message for this publish command. The pull request associated with
-                            this branch will be updated to contain this message. If you don't specify a filename, it is
-                            assumed that the contents of the pull request description are intended for the update
+                            this branch will be updated to contain this message. If you don't specify a filename, grape
+                            will give you an opportunity to use contents of the pull request description are intended for the update
                             message. Both the commit message for the merge and an update log will contain this message.
                             Additionally, if email notification is configured, the contents of the email will have
                             this message.
@@ -690,7 +702,7 @@ options are at least listed below.
  grape-clone
     Clones a git repo and configures it for use with git.
 
-    Usage: grape-clone <url> <path> [--recursive]
+    Usage: grape-clone <url> <path> [--recursive] [--allNested]
 
     Arguments:
         <url>       The URL of the remote repository
@@ -698,16 +710,19 @@ options are at least listed below.
 
     Options:
         --recursive   Recursively clone submodules.
+        --allNested   Get all nested subprojects. 
+        
     
 ## config
 
     Configures the current repo to be optimized for GRAPE on LC
-    Usage: grape-config [--cv | --nocv] [--nocredcache] [--p4merge] 
+    Usage: grape-config [--uv [--uvArg=<arg>]... | --nouv] 
+                        [--nocredcache] [--p4merge] 
                         [--nop4merge] [--p4diff] [--nop4diff] [--git-p4]
 
     Options:
-        --cv            walks you through setting up a sparse checkout for this repo. (interactive)
-        --nocv          skips custom-view questions
+        --uv            walks you through setting up a sparse checkout for this repo. (interactive)
+        --nouv          skips custom-view questions
         --nocredcache   disables https 12 hr credential cacheing (this option recommended for Windows users)
         --p4merge       will set up p4merge as your merge tool. 
         --nop4merge     will skip p4merge questions.
@@ -889,6 +904,16 @@ options are at least listed below.
 
 
     
+## test
+
+    grape test
+    Runs grape's unit tests.    
+    Usage: grape-test [<suite>]...
+
+
+    Arguments:
+    <suite>  The name of the suite to test. The default is all. 
+    
 ## up
 
     grape up
@@ -903,6 +928,21 @@ options are at least listed below.
 
 
     
+## updateSubproject
+
+        grape updateSubproject
+        Updates an existing subproject from its host repository.  
+        
+        Usage: grape-updateSubproject subtree --name=<name> --branch=<committish>
+
+        Options:
+        --name=<name>  The name of the subproject. Must match a [subtree-<name>] section in .grapeconfig
+                       that has prefix and remote options defined. 
+        
+        --branch=<b>   The branch in the subtree's host repository whose state you want in your 
+                       repository.
+
+    
 ## installHooks
  grape installHooks
     Installs callbacks to grape in .git/hooks, allowing grape-configurable hooks to be used
@@ -911,6 +951,7 @@ options are at least listed below.
     Usage: grape-installHooks [--noRecurse] [--toInstall=<hook>]...
 
     Options:
+    --noRecurse           If set, do not recurse into submodules and nested subprojects.
     --toInstall=<hook>    the list of hook-types to install
                           [default: pre-commit pre-push pre-rebase post-commit post-rebase post-merge post-checkout]
 
@@ -951,7 +992,8 @@ options are at least listed below.
 ## uv
 
     grape uv  - Updates your active submodules and ensures you are on a consistent branch throughout your project.
-    Usage: grape-uv [-f ] [-v] [--checkSubprojects] [-b]
+    Usage: grape-uv [-f ] [-v] [--checkSubprojects] [-b] [--skipSubmodules] [--allSubmodules]
+                    [--skipNestedSubprojects] [--allNestedSubprojects]
 
     Options:
         
@@ -962,22 +1004,27 @@ options are at least listed below.
                                 not go through the 'which submodules do you want' script.
         -b                      Automatically creates subproject branches that should be there according to your branching
                                 model. 
+        --allSubmodules         Automatically add all submodules to your workspace. 
+        --allNestedSubprojects  Automatically add all nested subprojects to your workspace. 
 
     
 ## version
 
     grape version
     This command is used for projects that wish to have their version numbers managed by grape.
+    The read subcommand is a no-op - it is used internally by other grape/vine modules. 
 
     Usage: grape-version init <version> --file=<path> [--matchTo=<str>] [--prefix=<verPrefix>] [-suffix=<verSuffix>]
                                                       [--tag | --notag | --updateTag=<bool>]
            grape-version tick [--major | --minor | --slot=<int>]
                               [--tag | --notag | --updateTag=<bool>]
                               [--matchTo=<matchTo>]
-                              [--prefix=<prefix>] [--suffix=<sufix>] [--tagPrefix=<prefix>] [--file=<path>]
+                              [--prefix=<prefix>] [--suffix=<sufix>] [--tagPrefix=<prefix>] [--tagSuffix=<sufix>][--file=<path>]
                               [--nocommit]
                               [--notick]
                               [--tagNested]
+                              [--public=<branch>]
+           grape-version read [--prefix=<prefix>] [--suffix=<suffix>] [--file=<file>]
 
     Arguments:
         <version>           Used by grape version init, this is the initial version that grape will start counting from.
@@ -1000,11 +1047,15 @@ options are at least listed below.
         --prefix=<prefix>   The version number prefix for version string to match in <file>, such as the 'v' in v1.2.3.
                             [default: .grapeconfig.versioning.prefix]
         --suffix=<suffix>   The version number suffix for grape-version to match in <file>, such as the 'm' in v1.2.3.m
+                            [default: ]
         --major             Tick the Major (1st) version number.
         --minor             Tick the Minor (2nd) version number.
         --slot=<int>        Tick the <int>'th version number. 1 = Major, 2 = Minor, 3 = third, etc. If <int> is bigger
                             than the current max number of digits, the version number will be extended to have <int>
-                            digits. Default value comes from .grapeconfig.versioning.branchSlotMappings
+                            digits. Default value comes from .grapeconfig.versioning.branchSlotMappings. 
+        --public=<branch>   The public branch to use for determine the slot to tick. Default based on 
+                            .grapeconfig.flow.topicprefixmappings. Grape publish uses this option to ensure the version
+                            ticking is consistent with the --public option passed to grape publish. 
         --updateTag=<bool>  If true, update the version git annotated tag. [default: .grapeconfig.versioning.updateTag]
         --tag               Forces updateTag to be True.
         --notag             Forces updateTag to be False.
@@ -1015,6 +1066,7 @@ options are at least listed below.
         --notick            Do not tick the version in <file>. Useful with --tag to tag HEAD as being the current
                             version in <file>.
         --tagNested         Tag any active nested subprojects. 
+        
 
 
     
@@ -1046,7 +1098,7 @@ options are at least listed below.
     Creates a new topic branch <type>/<username>/<descr> off of a public <branch>, where <type> is read from 
     one of the <type>:<branch> pairs found in .grapeconfig.flow.topicPrefixMappings.
 
-    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [<descr>] 
+    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [-v] [<descr>] 
 
     Options:
     --user=<username>       The user developing this branch. Asks by default. 
@@ -1056,6 +1108,7 @@ options are at least listed below.
     --recurse               Create the branch in submodules. 
                             [default: .grapeconfig.workspace.manageSubmodules]
     --norecurse             Don't create the branch in submodules.
+    -v                      Be more verbose. 
     
     Optional Arguments:
     <descr>                  Single word description of work being done on this branch. Asks by default.
@@ -1068,7 +1121,7 @@ options are at least listed below.
     Creates a new topic branch <type>/<username>/<descr> off of a public <branch>, where <type> is read from 
     one of the <type>:<branch> pairs found in .grapeconfig.flow.topicPrefixMappings.
 
-    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [<descr>] 
+    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [-v] [<descr>] 
 
     Options:
     --user=<username>       The user developing this branch. Asks by default. 
@@ -1078,6 +1131,7 @@ options are at least listed below.
     --recurse               Create the branch in submodules. 
                             [default: .grapeconfig.workspace.manageSubmodules]
     --norecurse             Don't create the branch in submodules.
+    -v                      Be more verbose. 
     
     Optional Arguments:
     <descr>                  Single word description of work being done on this branch. Asks by default.
@@ -1090,7 +1144,7 @@ options are at least listed below.
     Creates a new topic branch <type>/<username>/<descr> off of a public <branch>, where <type> is read from 
     one of the <type>:<branch> pairs found in .grapeconfig.flow.topicPrefixMappings.
 
-    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [<descr>] 
+    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [-v] [<descr>] 
 
     Options:
     --user=<username>       The user developing this branch. Asks by default. 
@@ -1100,6 +1154,7 @@ options are at least listed below.
     --recurse               Create the branch in submodules. 
                             [default: .grapeconfig.workspace.manageSubmodules]
     --norecurse             Don't create the branch in submodules.
+    -v                      Be more verbose. 
     
     Optional Arguments:
     <descr>                  Single word description of work being done on this branch. Asks by default.
@@ -1112,7 +1167,7 @@ options are at least listed below.
     Creates a new topic branch <type>/<username>/<descr> off of a public <branch>, where <type> is read from 
     one of the <type>:<branch> pairs found in .grapeconfig.flow.topicPrefixMappings.
 
-    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [<descr>] 
+    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [-v] [<descr>] 
 
     Options:
     --user=<username>       The user developing this branch. Asks by default. 
@@ -1122,6 +1177,7 @@ options are at least listed below.
     --recurse               Create the branch in submodules. 
                             [default: .grapeconfig.workspace.manageSubmodules]
     --norecurse             Don't create the branch in submodules.
+    -v                      Be more verbose. 
     
     Optional Arguments:
     <descr>                  Single word description of work being done on this branch. Asks by default.
@@ -1134,7 +1190,7 @@ options are at least listed below.
     Creates a new topic branch <type>/<username>/<descr> off of a public <branch>, where <type> is read from 
     one of the <type>:<branch> pairs found in .grapeconfig.flow.topicPrefixMappings.
 
-    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [<descr>] 
+    Usage: grape-<type> [--start=<branch>] [--user=<username>] [--noverify] [--recurse | --norecurse] [-v] [<descr>] 
 
     Options:
     --user=<username>       The user developing this branch. Asks by default. 
@@ -1144,6 +1200,7 @@ options are at least listed below.
     --recurse               Create the branch in submodules. 
                             [default: .grapeconfig.workspace.manageSubmodules]
     --norecurse             Don't create the branch in submodules.
+    -v                      Be more verbose. 
     
     Optional Arguments:
     <descr>                  Single word description of work being done on this branch. Asks by default.

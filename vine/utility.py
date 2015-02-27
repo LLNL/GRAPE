@@ -30,7 +30,7 @@ def makePathPortable(path):
     return newPath
 
 
-def executeSubProcess(command, workingDirectory=os.getcwd(), outFileHandle=subprocess.PIPE, verbose=2,
+def executeSubProcess(command, workingDirectory=os.getcwd(), verbose=2,
                       stdin=sys.stdin):
     if verbose > 1:
         print("Executing: " + command + "\n\t Working Directory: " + workingDirectory)
@@ -38,19 +38,35 @@ def executeSubProcess(command, workingDirectory=os.getcwd(), outFileHandle=subpr
     #Note: Even though python's documentation says that "shell=True" opens up a computer for malicious shell commands,
     # it is needed to allow users to fully utilize shell commands, such as cd.
     #***************************************************************************************************************
-    process = subprocess.Popen(command, stdout=outFileHandle, stderr=subprocess.STDOUT, shell=(os.name != "nt"),
-                               cwd=workingDirectory, stdin=stdin)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=(os.name != "nt"),
+                               cwd=workingDirectory, stdin=stdin, bufsize=1)
     output = ""
-    for line in iter(process.stdout.readline, ''):
-        line = line.replace('\r', '').replace('\n', '')
-        if verbose > 0: 
-            print line
+    
+    # this might be the cause of a hangout, trying alternative below to see if hang reports diminish...
+    #for line in iter(process.stdout.readline, b''):
+        #line = line.replace('\r', '').replace('\n', '')
+        #if verbose > 0: 
+            #print line
+            #sys.stdout.flush()
+            #sys.stderr.flush()
+        #line += "\n"
+        #output = output+line
+        
+        
+    while process.poll() is None:
+        out = process.stdout.read(1)
+        if verbose > 0:
+            sys.stdout.write(out)
             sys.stdout.flush()
-        line += "\n"
-        output = output+line
+        output += out
+        
     process.wait()
     
-    #output = process.communicate()[0]
+    out =  process.communicate()[0]
+    if verbose > 0:
+        sys.stdout.write(out)
+        sys.stdout.flush()
+    output += out
     #if verbose > 0:
     #    print(output.strip())
     process.output = output
@@ -123,16 +139,16 @@ def writeDefaultConfig(filename):
 
 
 # return the path to the base level of the current workspace. (outermost git repo)
-def workspaceDir(): 
+def workspaceDir(warnIfNotFound = True): 
     cwd = os.getcwd()
     basedir = None
-    while True: 
-        try: 
-            basedir = git.baseDir()
-            os.chdir(os.path.join(basedir, ".."))
-        except git.GrapeGitError:
-            break
-    if not basedir:
+
+ # go until you're at the root (you don't have a head after splitting)
+    while os.path.split(os.getcwd())[1]:
+        if os.path.exists(os.path.join(os.getcwd(), ".git")): 
+            basedir = os.getcwd()
+        os.chdir(os.path.join(os.getcwd(), ".."))
+    if not basedir and warnIfNotFound:
         print("GRAPE WARNING: expected to be in your workspace, no .git found")
     os.chdir(cwd)
     return basedir
@@ -165,21 +181,23 @@ def getGrapeExec():
     else:
         return os.path.join(os.path.dirname(__file__), "..", "grape")
 
-# handles subproject remote URL parsing. Needed for subtree and nested project support. (git handles the submodules)
-def parseSubprojectRemoteURL(subtreeRemote): 
-    path = subtreeRemote.strip().split('/')
-    if "ssh:" == path[0] or "https:" == path[0]:  
-        return subtreeRemote
-    if ".." != path[0]:
-        return subtreeRemote
+# Takes a URL and returns a hard path for it
+def parseSubprojectRemoteURL(url): 
+    path = url.strip().split('/')
+    if "https:" == path[0] or "ssh:" == path[0] or "" == path[0]:
+        return url      #Already a hard path
 
-    # the subtreeRemote is a relative path
+    # We have a relative path so start the remote origin URL
     originURL = git.config("--get remote.origin.url", quiet=True).strip().split('/')
-    
-    n = 1
-    while path[-n] != "..": 
-        originURL[-n] = path[-n]
-        n += 1
+
+    #Now parse path and modify originURL to make a hard path
+    for p in path:
+        if p == ".." and len(originURL) > 0:
+            originURL.pop()
+        elif p == ".":
+            pass
+        else:
+            originURL.append(p)
 
     return '/'.join(originURL)
 
