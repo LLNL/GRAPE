@@ -175,7 +175,7 @@ class PullRequest(StashyNode):
 
     def reviewers(self):
         """
-        Returns [(username,bool(approved))...]
+        Returns [(username,bool(approved),displayname)...]
         """
         #Stash REST API for reviewer definition snippet:
         # "reviewers": [
@@ -190,7 +190,10 @@ class PullRequest(StashyNode):
         for reviewer in self.node["reviewers"]:
             name = reviewer["user"]["name"]
             approved = reviewer["approved"] 
-            ret.append((name, approved))
+            displayName = reviewer["user"]["displayName"] 
+            if displayName == "":
+               displayName = name 
+            ret.append((name, approved, displayName))
         return ret
 
     def state(self):
@@ -243,7 +246,7 @@ class PullRequest(StashyNode):
 
     def __str__(self):
         return "Title: %s\n" % self.title() + "From: %s\n" % self.fromRef() + "To: %s\n" % self.toRef() + \
-            "Reviewers: %s\n" % self.reviewers()
+            "Reviewers: %s\n" % ', '.join(r[0]+" (%s)" % ("Approved" if r[1] else "Not yet approved") for r in self.reviewers()) + "Description: %s\n" % self.description()
 
 
 if __name__ == "__main__":

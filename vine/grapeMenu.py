@@ -18,11 +18,13 @@ import mergeRemote
 import newFlowBranch
 import newWorkingTree
 import publish
+import pull
 import push
 import quit
 import resolveConflicts
 import resumable
 import review
+import stash
 import status
 import test
 import updateLocal
@@ -68,7 +70,7 @@ class _Menu(object):
         self._optionLookup = {}
         #Add/order your menu option here
         self._options = [addSubproject.AddSubproject(), bundle.Bundle(), bundle.Unbundle(), branches.Branches(),
-                         status.Status(), checkout.Checkout(), push.Push(), commit.Commit(), publish.Publish(),
+                         status.Status(), stash.Stash(), checkout.Checkout(), push.Push(), pull.Pull(), commit.Commit(), publish.Publish(),
                          clone.Clone(), config.Config(), grapeConfig.WriteConfig(),
                          foreach.ForEach(), merge.Merge(), mergeDevelop.MergeDevelop(), mergeRemote.MergeRemote(),
                          deleteBranch.DeleteBranch(), newWorkingTree.NewWorkingTree(),
@@ -96,8 +98,7 @@ class _Menu(object):
             print("Unknown option '%s'" % choice)
             return None
 
-    def applyMenuChoice(self, choice, args=None, option_args=None):
-
+    def applyMenuChoice(self, choice, args=None, option_args=None, globalArgs=None):
         chosen_option = self.getOption(choice)
         if chosen_option is None:
             return False
@@ -121,18 +122,28 @@ class _Menu(object):
                 if len(args) > 1 and "--help" != args[1] and "-h" != args[1]:
                     print("GRAPE PARSING ERROR: could not parse %s\n" % (args[1:]))
                 raise e
+        if globalArgs is not None:
+            utility.applyGlobalArgs(globalArgs)
         try:
             if isinstance(chosen_option, resumable.Resumable):
                 if option_args["--continue"]:
                     return chosen_option._resume(option_args)
-
             return chosen_option.execute(option_args)
-        except git.GrapeGitError as e:
-            print ("GRAPE GIT: Uncaught Error in grape-%s when executing '%s' in '%s'\n%s" %
-                   (chosen_option._key,  e.gitCommand, e.cwd, e.gitOutput))
-            print traceback.print_exc()
-            exit(e.code)
 
+        except git.GrapeGitError as e:
+            print traceback.print_exc()            
+            print ("GRAPE: Uncaught Error %s in grape-%s when executing '%s' in '%s'\n%s" %
+                   (e.code, chosen_option._key,  e.gitCommand, e.cwd, e.gitOutput))
+            exit(e.code)
+            
+        except utility.NoWorkspaceDirException as e:
+            print ("GRAPE: grape %s must be run from a grape workspace." % chosen_option.key)
+            print ("GRAPE: %s" % e.message)
+            exit(1)
+        finally:
+            if globalArgs is not None:
+                utility.popGlobalArgs()
+                
     # Present the main menu
     def presentTextMenu(self):
         width = 60
