@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import tempfile
 import traceback
@@ -58,8 +59,8 @@ class Publish(resumable.Resumable):
                          [--noReview]
                          [--useStash=<bool>]
                          [--deleteTopic=<bool>]
-                         [--emailNotification=<bool> [--emailHeader=<str> --emailSubject=<str> --emailSendTo=<addr>
-                          --emailServer=<smtpserver> --emailMaxFiles=<int>]]
+                         [--emailNotification=<bool> [--emailHeader=<str> --emailFooter=<str>
+                          --emailSubject=<str> --emailSendTo=<addr> --emailServer=<smtpserver> --emailMaxFiles=<int>]]
                          [<CommitMessageFile>]
             grape-publish --continue
             grape-publish --abort
@@ -138,7 +139,7 @@ class Publish(resumable.Resumable):
                             [default: .grapeconfig.project.name]
     --repo=<repo>           Your Stash repo. See grape-review for more details.
                             [default: .grapeconfig.repo.name]
-    -R <arg>                Argument(s) to pass to grape-review, in addition to --title="**IN PROGRES**:" --prepend.
+    -R <arg>                Argument(s) to pass to grape-review, in addition to --title="**IN PROGRESS**:" --prepend.
                             Type grape review --help for valid options.
     --noReview              Don't perform any actions that interact with pull requests. Overrides --useStash.
     --useStash=<bool>       Whether or not to use pull requests. [default: .grapeconfig.publish.useStash]
@@ -148,9 +149,10 @@ class Publish(resumable.Resumable):
     --submodulePublic=<b>   The branch to publish to in submodules. Defaults to the mapping for the current topic branch
                             as described by .grapeconfig.workspace.submoduleTopicPrefixMappings.
     --emailNotification=<b> Set to true to send a notification email after you've published. The email will consist of
-                            a header <header>, and a message, generally the contents of <CommitMessageFile> and/or
-                            the Pull Request description. The email is sent to <addr>, and will be CC'd to the user.
-                            For the email subject and header, the string literals
+                            a header <header> and a message, generally the contents of <CommitMessageFile> and/or
+                            the Pull Request description, followed by a footer <footer>. The email is sent to <addr>,
+                            and will be CC'd to the user.
+                            For the email subject, header and footer, the string literals
                             '<user>', '<date>', '<version>', and '<public>' with the following:
                             <user>: the result of git config --get user.name
                             <date>: the current timestamp.
@@ -159,6 +161,8 @@ class Publish(resumable.Resumable):
                             [default: .grapeconfig.publish.emailNotification]
     --emailHeader=<header>  The email header. See above.
                             [default: .grapeconfig.publish.emailHeader]
+    --emailFooter=<footer>  The email footer. See above.
+                            [default: .grapeconfig.publish.emailFooter]
     --emailSubject=<sbj>    The email subject. See above.
                             [default: .grapeconfig.publish.emailSubject]
     --emailSendTo=<addr>    The comma-delimited list of receivers of the email.
@@ -221,6 +225,7 @@ class Publish(resumable.Resumable):
         # email config
         config.set('publish', 'emailNotification', 'False')
         config.set('publish', 'emailHeader', '<public> updated to <version>')
+        config.set('publish', 'emailFooter', '')
         config.set('publish', 'emailServer', 'smtp.email.server')
         config.set('publish', 'emailSendTo', 'user.list@company.com')
         config.set('publish', 'emailSubject', '<public> updated to <version>')
@@ -236,6 +241,7 @@ class Publish(resumable.Resumable):
         self.st_remotes = {}
         self.st_branches = {}
         self.cascadeDict = {}
+        self.doDelete = None
 
     def description(self):
         try:
@@ -523,7 +529,7 @@ class Publish(resumable.Resumable):
                     request = r
                     break
         if request:
-            title = request.title().replace("**IN PROGRESS**", "")
+            title = re.sub("^.*\*\*IN PROGRESS\*\* *", "", request.title())
             return self.markReview(args, ["--title=%s" % title, "--state=%s" % state], "")
         else:
             utility.printMsg("WARNING: No Open or Merged IN PROGRESS pull request found. Continuing...")
@@ -662,8 +668,8 @@ class Publish(resumable.Resumable):
             submodulePublic = args["--submodulePublic"]
             submodules = git.getModifiedSubmodules(public, topic)
             for sub in submodules:
-               os.chdir(os.path.join(wsdir, sub))
-               self.progress["modifiedFiles"] += [sub + "/" + s for s in self.getModifiedFileList(submodulePublic, topic, args)]
+                os.chdir(os.path.join(wsdir, sub))
+                self.progress["modifiedFiles"] += [sub + "/" + s for s in self.getModifiedFileList(submodulePublic, topic, args)]
             os.chdir(wsdir)
 
         # Get list of modified files in nested subprojects
@@ -671,7 +677,7 @@ class Publish(resumable.Resumable):
             os.chdir(os.path.join(wsdir, nested))
             modified = self.getModifiedFileList(public, topic, args)
             if len(modified) > 0:
-               self.progress["modifiedFiles"] += [nested + "/" + s for s in modified]
+                self.progress["modifiedFiles"] += [nested + "/" + s for s in modified]
         os.chdir(wsdir)
 
         return True
@@ -832,8 +838,8 @@ class Publish(resumable.Resumable):
             os.chdir(wsdir)
             ret = grapeMenu.menu().applyMenuChoice("version", versionArgs)
             for nested in grapeConfig.GrapeConfigParser.getAllActiveNestedSubprojectPrefixes():
-               os.chdir(os.path.join(wsdir, nested))
-               git.push("--tags origin")
+                os.chdir(os.path.join(wsdir, nested))
+                git.push("--tags origin")
             os.chdir(wsdir)
             git.push("--tags origin")
             os.chdir(cwd)
@@ -847,29 +853,38 @@ class Publish(resumable.Resumable):
         mailfile = tempfile.mktemp()
 
         with open(mailfile, 'w') as mf:
-           date = time.asctime()
-           emailHeader = args["--emailHeader"]
-           emailHeader = emailHeader.replace("<user>", git.config("--get user.name"))
-           emailHeader = emailHeader.replace("<date>", date)
-           emailHeader = emailHeader.replace("<version>", self.progress["version"])
-           emailHeader = emailHeader.replace("<reviewers>", self.progress["reviewers"])
-           emailHeader = emailHeader.replace("<public>", args["--public"])
-           emailHeader = emailHeader.split("\\n")
-           mf.write('\n'.join(emailHeader))
-           comments = self.progress["commitMsg"]
-           mf.write('\n')
-           mf.write(comments)
-           updatelist = self.progress["modifiedFiles"]
-           if len(updatelist) > 0:
-               mf.write("\nFILES UPDATED:\n")
-               mf.write("\n".join(updatelist))
-
+            date = time.asctime()
+            emailHeader = args["--emailHeader"]
+            emailHeader = emailHeader.replace("<user>", git.config("--get user.name"))
+            emailHeader = emailHeader.replace("<date>", date)
+            emailHeader = emailHeader.replace("<version>", self.progress["version"])
+            emailHeader = emailHeader.replace("<reviewers>", self.progress["reviewers"])
+            emailHeader = emailHeader.replace("<public>", args["--public"])
+            emailHeader = emailHeader.split("\\n")
+            mf.write('\n'.join(emailHeader))
+            comments = self.progress["commitMsg"]
+            mf.write('\n')
+            mf.write(comments)
+            updatelist = self.progress["modifiedFiles"]
+            if len(updatelist) > 0:
+                mf.write("\nFILES UPDATED:\n")
+                mf.write("\n".join(updatelist))
+            mf.write('\n')
+            emailFooter = args["--emailFooter"]
+            emailFooter = emailFooter.replace("<user>", git.config("--get user.name"))
+            emailFooter = emailFooter.replace("<date>", date)
+            emailFooter = emailFooter.replace("<version>", self.progress["version"])
+            emailFooter = emailFooter.replace("<reviewers>", self.progress["reviewers"])
+            emailFooter = emailFooter.replace("<public>", args["--public"])
+            emailFooter = emailFooter.split("\\n")
+            mf.write('\n'.join(emailFooter))
+ 
         if not args["--emailNotification"].lower() == "true":
             utility.printMsg("Skipping E-mail notification..")
             with open(mailfile, 'r') as mf:
-               utility.printMsg("-- Begin update message --")
-               utility.printMsg(mf.read())
-               utility.printMsg("-- End update message --")
+                utility.printMsg("-- Begin update message --")
+                utility.printMsg(mf.read())
+                utility.printMsg("-- End update message --")
             return True
 
         # Open the file back up and attach it to a MIME message
@@ -913,17 +928,23 @@ class Publish(resumable.Resumable):
 
         return True
 
-    @staticmethod
-    def deleteTopicBranch(args):
-        if args["--deleteTopic"].lower() == "true":
-            grapeMenu.menu().applyMenuChoice("db", [args["--topic"], "--verify"])
+    def askWhetherToDelete(self, args):
+        if self.doDelete is None:
+            if args["--deleteTopic"].lower() == "true":
+                self.doDelete = utility.userInput("Once the publish is done, would you like to delete the branch %s ? \n[y/n]" % (args["--topic"]), default='y')
+                
+                
+    def deleteTopicBranch(self, args):
+        self.askWhetherToDelete(args)
+        if self.doDelete:
+            grapeMenu.menu().applyMenuChoice("db", [args["--topic"]])
         # If the branch was not deleted, offer to return to that branch
         try:
             # SHA will raise an exception if the branch has been deleted
             if git.SHA(args["--topic"]):
-               checkout = utility.userInput("You are currently on %s. Would you like to checkout %s? [y,n]" % (git.currentBranch(), args["--topic"]), "n")
-               if checkout: 
-                  grapeMenu.menu().applyMenuChoice("checkout", [args["--topic"]])
+                checkout = utility.userInput("You are currently on %s. Would you like to checkout %s? [y,n]" % (git.currentBranch(), args["--topic"]), "n")
+                if checkout: 
+                    grapeMenu.menu().applyMenuChoice("checkout", [args["--topic"]])
         except:
             pass
         return True
@@ -1099,9 +1120,7 @@ class Publish(resumable.Resumable):
         if args["--noRecurse"]:
             recurse = False
 
-        # no need to recurse if there are no modified submodules
-        submodules = git.getModifiedSubmodules(public, topic)
-        args["--recurse"] = recurse and submodules
+        args["--recurse"] = recurse
         if args["--recurse"]:
             if not args["--submodulePublic"]:
                 submapping = config.getMapping('workspace', 'submoduleTopicPrefixMappings')
@@ -1170,6 +1189,9 @@ class Publish(resumable.Resumable):
         if not proceed:
             return False        
         self.progress["targetsVerified"] = True
+        # get the commit message here as well.
+        self.loadCommitMessage(args)
+        self.askWhetherToDelete(args)
         return True
 
 
@@ -1212,7 +1234,10 @@ class Publish(resumable.Resumable):
 
         if recurse:
             submodulePublic = args["--submodulePublic"]
-            submodules = git.getModifiedSubmodules(public, topic)
+            activeSubmodules = git.getActiveSubmodules()
+            modifiedSubmodules = git.getModifiedSubmodules(public, topic)
+            unmodifiedSubmodules = list(set(activeSubmodules) - set(modifiedSubmodules))
+                                                              
             # submodule policy is Command Line requested policy, otherwise is based on 
             #       .grapeconfig.workspace.submodulePublishPolicy
             submodulePolicy = CLPolicy
@@ -1224,10 +1249,9 @@ class Publish(resumable.Resumable):
 
             valid = self.validateInput(submodulePolicy, args)
             if valid and self.verifyPublishTargetsWithUser(args):
-                for sub in submodules:
+                for sub in modifiedSubmodules:
                     subpath = os.path.join(wsdir,sub)
                     os.chdir(subpath)
-
                     grapeMenu.menu().applyMenuChoice('up', ['up', '--noRecurse', '--wd=%s' % subpath, '--public=%s' % submodulePublic])
                     self.publish(submodulePolicy, submodulePublic, topic, args)
                     os.chdir(wsdir)
@@ -1239,10 +1263,13 @@ class Publish(resumable.Resumable):
                     git.commit("-m \"%s - submodules published\"" % args["-m"])
                 except git.GrapeGitError:
                     pass
-            
+            # ensure submodules that aren't modified end up on the public branch
+            for sub in unmodifiedSubmodules:
+                with utility.cd(os.path.join(wsdir, sub)):
+                    git.checkout(submodulePublic)
 
             # restore value for args["--cascade"]
-            args["<<publishedSubmodules>>"] = submodules
+            args["<<publishedSubmodules>>"] = modifiedSubmodules
             args["--cascade"] = outerCascadeOption
             os.chdir(wsdir)
 

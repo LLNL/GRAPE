@@ -607,8 +607,8 @@ options are at least listed below.
                          [--noReview]
                          [--useStash=<bool>]
                          [--deleteTopic=<bool>]
-                         [--emailNotification=<bool> [--emailHeader=<str> --emailSubject=<str> --emailSendTo=<addr>
-                          --emailServer=<smtpserver> --emailMaxFiles=<int>]]
+                         [--emailNotification=<bool> [--emailHeader=<str> --emailFooter=<str>
+                          --emailSubject=<str> --emailSendTo=<addr> --emailServer=<smtpserver> --emailMaxFiles=<int>]]
                          [<CommitMessageFile>]
             grape-publish --continue
             grape-publish --abort
@@ -687,7 +687,7 @@ options are at least listed below.
                             [default: .grapeconfig.project.name]
     --repo=<repo>           Your Stash repo. See grape-review for more details.
                             [default: .grapeconfig.repo.name]
-    -R <arg>                Argument(s) to pass to grape-review, in addition to --title="**IN PROGRES**:" --prepend.
+    -R <arg>                Argument(s) to pass to grape-review, in addition to --title="**IN PROGRESS**:" --prepend.
                             Type grape review --help for valid options.
     --noReview              Don't perform any actions that interact with pull requests. Overrides --useStash.
     --useStash=<bool>       Whether or not to use pull requests. [default: .grapeconfig.publish.useStash]
@@ -697,9 +697,10 @@ options are at least listed below.
     --submodulePublic=<b>   The branch to publish to in submodules. Defaults to the mapping for the current topic branch
                             as described by .grapeconfig.workspace.submoduleTopicPrefixMappings.
     --emailNotification=<b> Set to true to send a notification email after you've published. The email will consist of
-                            a header <header>, and a message, generally the contents of <CommitMessageFile> and/or
-                            the Pull Request description. The email is sent to <addr>, and will be CC'd to the user.
-                            For the email subject and header, the string literals
+                            a header <header> and a message, generally the contents of <CommitMessageFile> and/or
+                            the Pull Request description, followed by a footer <footer>. The email is sent to <addr>,
+                            and will be CC'd to the user.
+                            For the email subject, header and footer, the string literals
                             '<user>', '<date>', '<version>', and '<public>' with the following:
                             <user>: the result of git config --get user.name
                             <date>: the current timestamp.
@@ -708,6 +709,8 @@ options are at least listed below.
                             [default: .grapeconfig.publish.emailNotification]
     --emailHeader=<header>  The email header. See above.
                             [default: .grapeconfig.publish.emailHeader]
+    --emailFooter=<footer>  The email footer. See above.
+                            [default: .grapeconfig.publish.emailFooter]
     --emailSubject=<sbj>    The email subject. See above.
                             [default: .grapeconfig.publish.emailSubject]
     --emailSendTo=<addr>    The comma-delimited list of receivers of the email.
@@ -854,7 +857,8 @@ options are at least listed below.
 
     grape mr (merge remote branch). If the remote branch is different from your current branch, this will update
     or add a local version of that branch, then merge it into your current branch. If you perform a grape mr on the
-    current branch, then this will do a merge assuming the remote branch has a different line of development than
+    current branch or if the remote branch can not be fastforward merged into your local version of that branch,
+    then this will do a merge assuming the remote branch has a different line of development than
     your local branch. (Ideal for developers working on shared branches.)
 
     Usage: grape-mr [<branch>] [--am | --as | --at | --aT | --ay | --aY | --askAll] [--continue] [--noRecurse] [--noUpdate] [--squash]
@@ -982,7 +986,8 @@ options are at least listed below.
 
 
     Arguments:
-    <suite>  The name of the suite to test. The default is all. 
+    <suite>  The name of the suite to test. The default is all.
+             Enter listSuites as the suite name to list available suites. 
 
 
     
@@ -991,7 +996,7 @@ options are at least listed below.
     grape up
     Updates the current branch and any public branches. 
     Usage: grape-up [--public=<branch> ]
-                    [--recurse | --noRecurse]
+                    [--recurse | --noRecurse [--recurseSubprojects]]
                     [--wd=<working dir>]
                     
 
@@ -1003,6 +1008,7 @@ options are at least listed below.
     --noRecurse             Do not update branches in submodules and nested subprojects.
     --wd=<working dir>      Working directory which should be updated. 
                             Top level workspace will be updated if this is unspecified.
+    --recurseSubprojects    Recurse in nested subprojects even if you're not recursing in submodules. 
 
 
     
@@ -1152,15 +1158,36 @@ options are at least listed below.
 ## w
  
     grape w(alkthrough)
-    Usage: grape-w [--nogui] [<b1> [<b2>] ] [--] [ <filetree-ish> ]
+    Usage: grape-w [--difftool=<tool>] [--height=<height>] [--width=<width>] [--showUnchanged] [--noFetch]
+                   [--mergeDiff | --rawDiff ]
+                   [--noInactive] [--noTopLevel] [--noSubmodules] [--noSubtrees] [--noNestedSubprojects]
+                   [<b1>] [--staged | --workspace | <b2>]
 
     Options:
-        --nogui         Don't use kompare to do the walkthrough, use whatever diff is your default diff. 
-
-    Optional Arguments:
-        <b1>            The first tree to compare
-        <b2>            The second tree to compare
-        <filetree-ish>  The files to compare.  
+        --difftool=<tool>           Command to use for diff.
+                                    Valid choices are: kdiff3, kompare, tkdiff,
+                                       meld, xxdiff, emerge, gvimdiff,
+                                       ecmerge, diffuse, opendiff, p4merge, and araxis.
+                                    If unspecified, default git difftool will be used.
+        --height=<height>           Height of window in pixels.
+                                    [default: .grapeconfig.walkthrough.height]
+        --width=<width>             Width of window in pixels.
+                                    [default: .grapeconfig.walkthrough.width]
+        --staged                    Compare staged changes with branch <b1>.
+        --workspace                 Compare workspace files with branch <b1>.
+        --mergeDiff                 Perform diff of branches from common ancestor (diff <b1>...<b2>) (default).
+        --rawDiff                   Perform raw diff of branch files (diff <b1> <b2>).
+        --showUnchanged             Show unchanged subprojects.
+        --noFetch                   Do not fetch.
+        --noInactive                Do not show inactive subprojects.
+        --noTopLevel                Do not show outer level project.
+        --noSubmodules              Do not show submodules.
+        --noSubtrees                Do not show nested subtrees.
+        --noNestedSubprojects       Do not show nested subprojects.
+        <b1>                        The first branch to compare.
+                                    Defaults to the current branch of workspace.
+        <b2>                        The second branch to compare.
+                                    Defaults to the public branch for <b1>.
 
     
 ## q

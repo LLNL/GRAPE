@@ -39,34 +39,18 @@ class Status(option.Option):
             statusArgs += "-u "
         if args["--uno"]:
             statusArgs += "-uno "
+        
+        launcher = utility.MultiRepoCommandLauncher(getStatus, 
+                                        runInSubmodules=True, 
+                                        runInSubprojects=True, 
+                                        runInOuter=True,
+                                        globalArgs=[statusArgs, wsDir])
+        
+        stati = launcher.launchFromWorkspaceDir(noPause=True)
         status = {}
-        status["."] = git.status("--porcelain -b %s" % statusArgs).split('\n')
-        
-        #tweak formatting of first line
-        if status["."] and status["."][0] and status["."][0][0] != ' ':
-            status["."][0] = ' ' + status["."][0]
-        
-        subprojects = utility.getActiveSubprojects()
-        if subprojects:
-            utility.printMsg("gathering status on subprojects")
-        for sub in subprojects:
-            if not sub.strip():
-                continue
-            os.chdir(os.path.join(wsDir,sub))
-            subStatus = git.status("--porcelain -b %s" % statusArgs).split('\n')
-            if len(subStatus) > 0:
-                status[sub] = []
-            for line in subStatus: 
-                strippedL = line.strip()
-                if strippedL:
-                    tokens = strippedL.split()
-                    tokens[0] = tokens[0].strip()
-                    if len(tokens[0]) == 1: 
-                        tokens[0] = " %s" % tokens[0] 
-                    status[sub].append(' '.join([tokens[0], '/'.join([sub, tokens[1]])]))
-            os.chdir(wsDir)
-        
-        
+        for s, r in (zip(stati, launcher.repos)):
+            status[r] = s
+            
         for sub in status.keys():
             for line in status[sub]: 
                 lstripped = line.strip()
@@ -91,8 +75,13 @@ class Status(option.Option):
         
         if (len(missingBranches) > 0 ): 
             for mb in missingBranches:
-                utility.printMsg("Repository is missing public branch %s" % mb)
-            publicBranchesExist=False
+                utility.printMsg("Repository is missing public branch %s, attempting to fetch it now..." % mb)
+                try:
+                    git.fetch("origin %s:%s" % (mb, mb))
+                    utility.printMsg("%s added as a local branch" % mb)
+                except git.GrapeGitError as e:
+                    print e.gitOutput
+                    publicBranchesExist = False
         return publicBranchesExist
                     
     def checkForConsistentWorkspaceBranches(self, args):
@@ -128,25 +117,24 @@ class Status(option.Option):
                 if nestedbranch != wsBranch: 
                     consistentBranchState = False
                     utility.printMsg("Nested Project %s on branch %s when grape expects it to be on %s" % 
-                                     (nested,nestedbranch, wsBranch))        
+                                     (nested,nestedbranch, wsBranch))
         return consistentBranchState
         
     def execute(self, args):
 
-        wsDir = utility.workspaceDir() 
-        os.chdir(wsDir)
-        
-
-        if not args["--checkWSOnly"]:
-            self.printStatus(args)
-
-        # Sanity check workspace layout
-        publicBranchesExist = self.checkForLocalPublicBranches(args)       
-        
-        
-        # Check that submodule branching is consistent
-        consistentBranchState = self.checkForConsistentWorkspaceBranches(args)
+        with utility.cd(utility.workspaceDir()):
+            
     
+            if not args["--checkWSOnly"]:
+                self.printStatus(args)
+    
+            # Sanity check workspace layout
+            publicBranchesExist = self.checkForLocalPublicBranches(args)       
+            
+            
+            # Check that submodule branching is consistent
+            consistentBranchState = self.checkForConsistentWorkspaceBranches(args)
+        
         retval = True
         if args["--failIfInconsistent"]:
             retval = retval and publicBranchesExist and consistentBranchState
@@ -154,9 +142,38 @@ class Status(option.Option):
             retval = retval and publicBranchesExist
         if args["--failIfBranchesInconsistent"]:
             retval = retval and consistentBranchState
-        os.chdir(wsDir)
         return retval        
 
     
     def setDefaultConfig(self, config):
         pass
+
+def getStatus(branch='', repo='', args=''):
+    statusArgs = args[0]
+    wsDir = args[1]
+    toReturn = []
+    
+    sub = repo
+    if not sub.strip():
+        return ""
+    try:
+        
+        with utility.cd(sub):        
+            subStatus = git.status("--porcelain -b %s" % statusArgs).split('\n')
+            for line in subStatus: 
+                strippedL = line.strip()
+                if strippedL:
+                    tokens = strippedL.split()
+                    tokens[0] = tokens[0].strip()
+                    if len(tokens[0]) == 1: 
+                        tokens[0] = " %s " % tokens[0]
+                    if wsDir == sub:
+                        relPath = ""
+                        toReturn.append(' '.join([tokens[0], tokens[1]]))
+                    else:
+                        relPath = os.path.relpath(sub, wsDir)                        
+                        toReturn.append(' '.join([tokens[0], '/'.join([relPath, tokens[1]])]))
+        return toReturn
+    except Exception as e:
+        print e
+

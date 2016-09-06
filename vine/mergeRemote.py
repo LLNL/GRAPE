@@ -6,7 +6,8 @@ class MergeRemote(option.Option):
     """
     grape mr (merge remote branch). If the remote branch is different from your current branch, this will update
     or add a local version of that branch, then merge it into your current branch. If you perform a grape mr on the
-    current branch, then this will do a merge assuming the remote branch has a different line of development than
+    current branch or if the remote branch can not be fastforward merged into your local version of that branch,
+    then this will do a merge assuming the remote branch has a different line of development than
     your local branch. (Ideal for developers working on shared branches.)
 
     Usage: grape-mr [<branch>] [--am | --as | --at | --aT | --ay | --aY | --askAll] [--continue] [--noRecurse] [--noUpdate] [--squash]
@@ -53,7 +54,7 @@ class MergeRemote(option.Option):
         except utility.MultiRepoException as mre:
             commError = False
             commErrorRepos = []
-            for e, r in zip(mre, mre.repos):
+            for e, r in zip(mre.exceptions(), mre.repos()):
                 if e.commError:
                     commErrorRepos.append(r)
                     commError = True
@@ -66,13 +67,16 @@ class MergeRemote(option.Option):
         
         
         # update our local reference to the remote branch so long as it's fast-forwardable or we don't have it yet..)
-        hasRemote = git.hasBranch("origin/%s" % otherBranch)
+        hasRemote = ("origin/%s" % otherBranch) in git.remoteBranches()
         hasBranch = git.hasBranch(otherBranch)
         currentBranch = git.currentBranch()
-        if  hasRemote and  (git.branchUpToDateWith(otherBranch, "origin/%s" % otherBranch) or not hasBranch) and currentBranch != otherBranch:
-            utility.MultiRepoCommandLauncher(updateBranchHelper, branch=otherBranch).launchFromWorkspaceDir()
-            
-        args["<branch>"] = otherBranch if currentBranch != otherBranch else "origin/%s" % otherBranch
+        remoteUpToDateWithLocal = git.branchUpToDateWith("remotes/origin/%s" % otherBranch, otherBranch)
+        updateLocal =  hasRemote and  (remoteUpToDateWithLocal or not hasBranch) and currentBranch != otherBranch
+        if  updateLocal:
+            utility.printMsg("updating local branch %s from %s" % (otherBranch, "origin/%s" % otherBranch))
+            utility.MultiRepoCommandLauncher(updateBranchHelper, branch=otherBranch).launchFromWorkspaceDir(handleMRE=updateBranchHandleMRE)
+        
+        args["<branch>"] = otherBranch if updateLocal else "origin/%s" % otherBranch
         # we've handled the update, we don't want m or md to update the local branch. 
         args["--noUpdate"] = True
         # if mr is called by the user, need to initialize the --continue argument. 
@@ -88,8 +92,14 @@ class MergeRemote(option.Option):
 def fetchHelper():
     return git.fetch("origin", warnOnCommError=False, raiseOnCommError=True)
 
-def updateBranchHelper(branch, repo):
-    utility.printMsg("Updating local reference to %s in %s", (branch, repo))
+def updateBranchHelper(repo="unknown", branch="master"):
+    utility.printMsg("Updating local reference to %s in %s" % (branch, repo))
     return git.fetch("origin %s:%s" % (branch, branch))
     
+def updateBranchHandleMRE(mre):
+    for e, repo, branch in zip(mre.exceptions(), mre.repos(), mre.branches()):
+        if "Couldn't find remote ref" in e.gitOutput:
+            utility.printMsg("Remote reference to %s not present in %s. Remote ref must be present in all active submodules to merge.\n\t"
+                             "Either create placeholder branches or deactivate submodules to resolve. " % (branch, repo))
+    raise mre
     
