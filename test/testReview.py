@@ -3,7 +3,7 @@ import testGrape
 import os
 
 if not ".." in sys.path:
-    sys.path.append("..")
+    sys.path.insert(0, "..")
 from vine import grapeMenu
 
 
@@ -17,4 +17,3 @@ class TestReview(testGrape.TestGrape):
             self.fail("grape-review failed with output %s" % self.output.getvalue())
         contents = self.output.getvalue()
         self.assertTrue(ret)
-        self.assertIn("'id': '1'", contents)
